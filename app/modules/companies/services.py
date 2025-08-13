@@ -364,12 +364,18 @@ class CompanyService:
             fecha_registro=company.fecha_registro,
             fecha_actualizacion=company.fecha_actualizacion,
             sire_client_id=company.sire_client_id,
+            sire_client_secret=company.sire_client_secret,
             sunat_usuario=company.sunat_usuario,
+            sunat_clave=company.sunat_clave,
             sunat_usuario_secundario=company.sunat_usuario_secundario,
+            sunat_clave_secundaria=company.sunat_clave_secundaria,
             sistema_bancario=company.sistema_bancario,
             banco_usuario=company.banco_usuario,
+            banco_clave=company.banco_clave,
             pdt_usuario=company.pdt_usuario,
+            pdt_clave=company.pdt_clave,
             plame_usuario=company.plame_usuario,
+            plame_clave=company.plame_clave,
             configuraciones=company.configuraciones or {},
             notas_internas=company.notas_internas
         )

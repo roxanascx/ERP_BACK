@@ -27,8 +27,8 @@ class SunatApiClient:
             timeout: Timeout para requests en segundos
         """
         # URLs de SUNAT (cambiar según entorno)
-        self.base_url = base_url or "https://api.sunat.gob.pe/sire/v1"
-        self.auth_url = "https://api.sunat.gob.pe/auth/v1"
+        self.base_url = base_url or "https://api-sire.sunat.gob.pe"
+        self.auth_url = "https://api-seguridad.sunat.gob.pe/v1/clientessol"
         
         self.timeout = timeout
         self.max_retries = 3
@@ -167,19 +167,51 @@ class SunatApiClient:
         """
         auth_data = {
             "grant_type": "password",
+            "scope": "https://api-sire.sunat.gob.pe",
             "client_id": credentials.client_id,
             "client_secret": credentials.client_secret,
-            "username": f"{credentials.ruc} {credentials.sunat_usuario}",
-            "password": credentials.sunat_clave,
-            "scope": "sire"
+            "username": f"{credentials.ruc}{credentials.sunat_usuario}",  # SIN ESPACIO
+            "password": credentials.sunat_clave
+        }
+        
+        # Headers específicos para autenticación
+        auth_headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json"
         }
         
         try:
-            response = await self._make_request(
+            # URL específica con client_id
+            auth_url = f"{self.auth_url}/{credentials.client_id}/oauth2/token/"
+            
+            response = await self.client.request(
                 method="POST",
-                url=f"{self.auth_url}/oauth2/token",
-                data=auth_data
+                url=auth_url,
+                headers=auth_headers,
+                data=auth_data  # Usar data en lugar de json para form-urlencoded
             )
+            
+            logger.info(f"📥 [API] Response: {response.status_code}")
+            
+            # Verificar si es un error de autenticación
+            if response.status_code == 401:
+                error_details = "Credenciales inválidas"
+                try:
+                    error_data = response.json()
+                    error_details = error_data.get("error_description", error_details)
+                except:
+                    pass
+                raise SireAuthException(f"Token de autenticación inválido o expirado: {error_details}")
+            
+            # Verificar otros errores HTTP
+            if response.status_code >= 400:
+                error_msg = f"Error HTTP {response.status_code}"
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get("error_description", error_msg)
+                except:
+                    error_msg = response.text or error_msg
+                raise SireAuthException(f"Error en autenticación: {error_msg}")
             
             token_data = response.json()
             

@@ -101,8 +101,8 @@ class CompanyModel(BaseModel):
         return {
             'client_id': self.sire_client_id,
             'client_secret': self.sire_client_secret,
-            'username': f"{self.ruc} {self.sire_sol_username}",  # RUC + espacio + usuario
-            'password': self.sire_sol_password,  # Clave SOL
+            'username': f"{self.ruc} {self.sunat_usuario}",  # RUC + espacio + usuario SUNAT
+            'password': self.sunat_clave,  # Clave SUNAT
             'endpoint_url': f"https://api-seguridad.sunat.gob.pe/v1/clientessol/{self.sire_client_id}/oauth2/token/",
             'metodo': 'original'
         }
@@ -121,8 +121,8 @@ class CompanyModel(BaseModel):
             'ruc': self.ruc,
             'client_id': self.sire_client_id,
             'client_secret': self.sire_client_secret,
-            'username': self.sire_sol_username,  # Solo usuario SOL
-            'password': self.sire_sol_password,  # Clave SOL
+            'username': self.sunat_usuario,  # Usuario SUNAT
+            'password': self.sunat_clave,  # Clave SUNAT
             'endpoint_url': f"https://api-seguridad.sunat.gob.pe/v1/clientessol/{self.ruc}/oauth2/token/",
             'metodo': 'migrado'
         }

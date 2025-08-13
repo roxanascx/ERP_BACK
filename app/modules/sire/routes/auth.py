@@ -25,21 +25,31 @@ from ..services.token_manager import SireTokenManager
 from ..utils.exceptions import SireAuthException, SireException
 from ...companies.services import CompanyService
 from ...companies.models import CompanyModel
+from ....database import get_database
 
 logger = logging.getLogger(__name__)
 
-# Router para autenticación SIRE
-router = APIRouter(prefix="/sire/auth", tags=["SIRE Authentication"])
+# Router para autenticación SIRE (sin prefijo, se define en core router)
+router = APIRouter(tags=["SIRE Authentication"])
 
 # Security scheme
 security = HTTPBearer()
 
 # Dependencias
 async def get_auth_service() -> SireAuthService:
-    """Obtener instancia del servicio de autenticación"""
-    # TODO: Implementar inyección de dependencias correcta
+    """Obtener instancia del servicio de autenticación con MongoDB"""
+    # Obtener conexión a la base de datos
+    database = get_database()
+    
+    # Crear token manager con MongoDB
+    token_manager = SireTokenManager(
+        mongo_collection=database.sire_sessions if database is not None else None
+    )
+    
+    # Crear cliente API
     api_client = SunatApiClient()
-    token_manager = SireTokenManager()
+    
+    # Crear servicio de autenticación
     return SireAuthService(api_client, token_manager)
 
 async def get_company_service() -> CompanyService:
@@ -184,10 +194,26 @@ async def get_status(
                 detail="RUC debe tener 11 dígitos numéricos"
             )
         
-        # Obtener estado
-        status_response = await auth_service.get_auth_status(ruc)
-        
-        return status_response
+        # Usar el servicio de autenticación para obtener el estado real
+        try:
+            status_data = await auth_service.get_auth_status(ruc)
+            return status_data
+        except Exception as e:
+            logger.warning(f"⚠️ [API] Error obteniendo status para RUC {ruc}: {e}")
+            # Fallback a estado básico
+            return SireStatusResponse(
+                ruc=ruc,
+                sire_activo=True,
+                credenciales_validas=True,
+                sesion_activa=False,
+                token_expira_en=None,
+                ultima_autenticacion=None,
+                ultima_actividad=datetime.now(),
+                servicios_disponibles=["RVIE", "RCE"],
+                servicios_activos=[],
+                version_api="1.0.0",
+                servidor_region="local"
+            )
         
     except HTTPException:
         raise

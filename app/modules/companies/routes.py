@@ -167,7 +167,7 @@ async def get_current_company(
 # ENDPOINTS DE GESTIÓN SIRE
 # =========================================
 
-@router.post("/{ruc}/sire", response_model=SireInfoResponse)
+@router.post("/{ruc}/sire", response_model=CompanyDetailResponse)
 async def configure_sire(
     ruc: str,
     sire_config: SireConfigRequest,
@@ -184,21 +184,27 @@ async def configure_sire(
     
     try:
         print(f"🚀 [SIRE CONFIG] Llamando a service.configure_sire...")
-        result = await service.configure_sire(ruc, sire_config)
-        if not result:
+        sire_result = await service.configure_sire(ruc, sire_config)
+        if not sire_result:
             print(f"❌ [SIRE CONFIG] Error: Empresa {ruc} no encontrada")
             raise HTTPException(status_code=404, detail=f"Empresa no encontrada: {ruc}")
+        
+        # Obtener la empresa completa para devolver al frontend
+        print(f"🔄 [SIRE CONFIG] Obteniendo empresa completa...")
+        company_detail = await service.get_company(ruc)
+        if not company_detail:
+            print(f"❌ [SIRE CONFIG] Error: No se pudo obtener empresa completa {ruc}")
+            raise HTTPException(status_code=500, detail=f"Error obteniendo empresa actualizada: {ruc}")
+            
         print(f"✅ [SIRE CONFIG] SIRE configurado exitosamente para {ruc}")
-        return result
+        return company_detail
     except ValueError as e:
         print(f"❌ [SIRE CONFIG] ValueError: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"❌ [SIRE CONFIG] Exception inesperada: {type(e).__name__}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
     except HTTPException:
         raise
     except Exception as e:
+        print(f"❌ [SIRE CONFIG] Exception inesperada: {type(e).__name__}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 @router.get("/{ruc}/sire/credentials", response_model=SireCredentialsResponse)
@@ -246,7 +252,7 @@ async def get_sire_info(
             sire_activo=company.sire_activo,
             tiene_credenciales=company.tiene_sire,
             client_id=company.sire_client_id,
-            sol_username=company.sire_sol_username,
+            sunat_usuario=company.sunat_usuario,
             fecha_actualizacion=company.fecha_actualizacion
         )
     except HTTPException:

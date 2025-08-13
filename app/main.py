@@ -6,8 +6,7 @@ import json
 
 from .database import connect_to_mongo, close_mongo_connection
 from .routes import users
-from .modules.companies import routes as company_routes
-from .modules.sire.routes import sire_routers
+from .core.router import api_router  # Usar el router centralizado
 
 # Cargar variables de entorno
 load_dotenv()
@@ -122,13 +121,9 @@ async def test_database():
             "message": f"❌ Error de conexión: {str(e)}"
         }
 
-# Incluir rutas
+# Incluir rutas centralizadas
 app.include_router(users.router, prefix="/api/users", tags=["Usuarios"])
-app.include_router(company_routes.router, prefix="/api/companies", tags=["Empresas"])
-
-# Incluir rutas SIRE
-for sire_router in sire_routers:
-    app.include_router(sire_router, prefix="/api")
+app.include_router(api_router)  # Incluye companies y sire con prefijo /api/v1
 
 if __name__ == "__main__":
     import uvicorn

@@ -30,7 +30,65 @@ from ...companies.services import CompanyService
 logger = logging.getLogger(__name__)
 
 # Router
-router = APIRouter(prefix="/api/sire/rvie", tags=["SIRE-RVIE"])
+router = APIRouter(tags=["SIRE-RVIE"])
+
+@router.get("/test")
+async def test_rvie():
+    """Endpoint de prueba para verificar que RVIE está funcionando"""
+    return {"message": "RVIE endpoints están disponibles", "status": "ok"}
+
+@router.get("/endpoints")
+async def listar_endpoints_rvie():
+    """Listar todas las operaciones RVIE disponibles"""
+    return {
+        "rvie_endpoints": [
+            {
+                "endpoint": "/descargar-propuesta",
+                "method": "POST",
+                "description": "Descargar propuesta RVIE desde SUNAT",
+                "requires": ["ruc", "periodo"]
+            },
+            {
+                "endpoint": "/aceptar-propuesta", 
+                "method": "POST",
+                "description": "Aceptar propuesta RVIE de SUNAT",
+                "requires": ["ruc", "periodo"]
+            },
+            {
+                "endpoint": "/reemplazar-propuesta",
+                "method": "POST", 
+                "description": "Reemplazar propuesta RVIE con archivo personalizado",
+                "requires": ["ruc", "periodo", "archivo_txt"]
+            },
+            {
+                "endpoint": "/registrar-preliminar",
+                "method": "POST",
+                "description": "Registrar información preliminar RVIE",
+                "requires": ["ruc", "periodo", "registros"]
+            },
+            {
+                "endpoint": "/consultar-inconsistencias",
+                "method": "POST",
+                "description": "Consultar inconsistencias en registros RVIE",
+                "requires": ["ruc", "periodo"]
+            },
+            {
+                "endpoint": "/consultar-ticket",
+                "method": "POST",
+                "description": "Consultar estado de ticket RVIE",
+                "requires": ["ruc", "ticket"]
+            },
+            {
+                "endpoint": "/descargar-archivo",
+                "method": "POST",
+                "description": "Descargar archivo de resultado RVIE",
+                "requires": ["ruc", "periodo", "tipo_archivo"]
+            }
+        ],
+        "base_url": "/api/v1/sire/rvie",
+        "authentication": "Requiere credenciales SUNAT válidas (usuario/clave)",
+        "status": "disponible"
+    }
 
 # Dependencias
 async def get_rvie_service() -> RvieService:
@@ -40,6 +98,75 @@ async def get_rvie_service() -> RvieService:
 async def get_company_service() -> CompanyService:
     """Obtener instancia del servicio de empresas"""
     return CompanyService()
+
+# ========================================
+# ENDPOINTS GET PARA FRONTEND
+# ========================================
+
+@router.get("/{ruc}/resumen/{periodo}")
+async def obtener_resumen_rvie(
+    ruc: str,
+    periodo: str,
+    rvie_service: RvieService = Depends(get_rvie_service)
+):
+    """Obtener resumen RVIE para un período específico"""
+    try:
+        # Simular datos de resumen por ahora
+        return {
+            "ruc": ruc,
+            "periodo": periodo,
+            "total_comprobantes": 150,
+            "total_importe": 125000.50,
+            "inconsistencias_pendientes": 3,
+            "estado_proceso": "En proceso",
+            "fecha_ultima_actualizacion": "2025-08-13T10:30:00",
+            "tickets_activos": []
+        }
+    except Exception as e:
+        logger.error(f"Error obteniendo resumen RVIE: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/{ruc}/inconsistencias/{periodo}")
+async def obtener_inconsistencias_rvie(
+    ruc: str,
+    periodo: str,
+    rvie_service: RvieService = Depends(get_rvie_service)
+):
+    """Obtener inconsistencias RVIE para un período específico"""
+    try:
+        # Simular datos de inconsistencias por ahora
+        return {
+            "ruc": ruc,
+            "periodo": periodo,
+            "inconsistencias": [
+                {
+                    "linea": 15,
+                    "campo": "tipo_documento",
+                    "descripcion": "Tipo de documento no válido",
+                    "severidad": "ERROR",
+                    "valor_esperado": "01, 03, 07, 08"
+                },
+                {
+                    "linea": 32,
+                    "campo": "numero_documento",
+                    "descripcion": "Formato de número de documento incorrecto",
+                    "severidad": "WARNING",
+                    "valor_esperado": "Formato: F001-00000001"
+                },
+                {
+                    "linea": 45,
+                    "campo": "importe_total",
+                    "descripcion": "Importe total no coincide con la suma de líneas",
+                    "severidad": "ERROR",
+                    "valor_esperado": null
+                }
+            ],
+            "total_inconsistencias": 3,
+            "estado": "pendiente"
+        }
+    except Exception as e:
+        logger.error(f"Error obteniendo inconsistencias RVIE: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 async def validate_ruc_access(ruc: str, company_service: CompanyService = Depends(get_company_service)) -> CompanyModel:
     """Validar que el RUC existe y es accesible"""

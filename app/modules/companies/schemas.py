@@ -75,12 +75,18 @@ class CompanyResponse(BaseModel):
 class CompanyDetailResponse(CompanyResponse):
     """Schema de respuesta detallada para empresa (incluye más campos)"""
     sire_client_id: Optional[str] = Field(None, description="Client ID de SIRE")
+    sire_client_secret: Optional[str] = Field(None, description="Client Secret de SIRE")
     sunat_usuario: Optional[str] = Field(None, description="Usuario SUNAT principal")
+    sunat_clave: Optional[str] = Field(None, description="Clave SUNAT principal")
     sunat_usuario_secundario: Optional[str] = Field(None, description="Usuario SUNAT secundario")
+    sunat_clave_secundaria: Optional[str] = Field(None, description="Clave SUNAT secundaria")
     sistema_bancario: Optional[str] = Field(None, description="Sistema bancario")
     banco_usuario: Optional[str] = Field(None, description="Usuario del banco")
+    banco_clave: Optional[str] = Field(None, description="Clave del banco")
     pdt_usuario: Optional[str] = Field(None, description="Usuario PDT")
+    pdt_clave: Optional[str] = Field(None, description="Clave PDT")
     plame_usuario: Optional[str] = Field(None, description="Usuario PLAME")
+    plame_clave: Optional[str] = Field(None, description="Clave PLAME")
     configuraciones: Dict[str, Any] = Field(default_factory=dict, description="Configuraciones")
     notas_internas: Optional[str] = Field(None, description="Notas internas")
 
