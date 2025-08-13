@@ -6,6 +6,8 @@ import json
 
 from .database import connect_to_mongo, close_mongo_connection
 from .routes import users
+from .modules.companies import routes as company_routes
+from .modules.sire.routes import sire_routers
 
 # Cargar variables de entorno
 load_dotenv()
@@ -122,6 +124,11 @@ async def test_database():
 
 # Incluir rutas
 app.include_router(users.router, prefix="/api/users", tags=["Usuarios"])
+app.include_router(company_routes.router, prefix="/api/companies", tags=["Empresas"])
+
+# Incluir rutas SIRE
+for sire_router in sire_routers:
+    app.include_router(sire_router, prefix="/api")
 
 if __name__ == "__main__":
     import uvicorn
