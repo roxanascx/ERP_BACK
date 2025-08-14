@@ -109,10 +109,15 @@ async def get_rvie_service() -> RvieService:
         # Obtener conexión a la base de datos
         database = get_database()
         
-        # Crear token manager con MongoDB
-        token_manager = SireTokenManager(
-            mongo_collection=database.sire_sessions if database is not None else None
-        )
+        # Crear token manager con MongoDB (validación segura)
+        mongo_collection = None
+        try:
+            if database is not None:
+                mongo_collection = database.sire_sessions
+        except:
+            mongo_collection = None
+            
+        token_manager = SireTokenManager(mongo_collection=mongo_collection)
         
         # Crear cliente API
         api_client = SunatApiClient()
@@ -230,10 +235,24 @@ async def descargar_propuesta(
     company_service: CompanyService = Depends(get_company_service)
 ):
     """
-    Descargar propuesta RVIE desde SUNAT
+    Descargar propuesta RVIE desde SUNAT según Manual v25
     
     Permite descargar la propuesta de ventas e ingresos generada por SUNAT
-    para un período específico.
+    para un período específico. Incluye mejoras de performance, cache,
+    manejo de archivos ZIP y validaciones robustas.
+    
+    - **ruc**: RUC del contribuyente
+    - **periodo**: Período en formato YYYYMM 
+    - **forzar_descarga**: True para ignorar cache y descargar nuevamente
+    - **incluir_detalle**: True para incluir detalle completo de comprobantes
+    
+    **Mejoras implementadas**:
+    - ✅ Validaciones específicas del Manual SUNAT v25
+    - ✅ Manejo de respuestas masivas con paginación
+    - ✅ Retry automático para timeouts
+    - ✅ Cache inteligente (6 horas)
+    - ✅ Procesamiento de archivos ZIP comprimidos
+    - ✅ Manejo de respuestas asíncronas con tickets
     """
     try:
         # Validar que la empresa existe y tiene credenciales SIRE
@@ -247,22 +266,37 @@ async def descargar_propuesta(
                 detail="Company does not have SIRE credentials configured"
             )
         
-        logger.info(f"Descargando propuesta RVIE para RUC {request.ruc}, período {request.periodo}")
-        
-        # Ejecutar descarga de propuesta
-        propuesta = await rvie_service.descargar_propuesta(
-            ruc=request.ruc,
-            periodo=request.periodo
+        logger.info(
+            f"🚀 [API] Descargando propuesta RVIE para RUC {request.ruc}, período {request.periodo}. "
+            f"Forzar: {request.forzar_descarga}, Detalle: {request.incluir_detalle}"
         )
         
-        logger.info(f"Propuesta RVIE descargada exitosamente para {request.ruc}-{request.periodo}")
+        # Ejecutar descarga de propuesta con parámetros mejorados
+        propuesta = await rvie_service.descargar_propuesta(
+            ruc=request.ruc,
+            periodo=request.periodo,
+            forzar_descarga=request.forzar_descarga,
+            incluir_detalle=request.incluir_detalle
+        )
+        
+        logger.info(
+            f"✅ [API] Propuesta RVIE descargada exitosamente. "
+            f"RUC: {request.ruc}, Período: {request.periodo}, "
+            f"Comprobantes: {propuesta.cantidad_comprobantes}, "
+            f"Total: S/ {propuesta.total_importe}"
+        )
+        
         return propuesta
         
     except HTTPException:
+        # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
-        logger.error(f"Error descargando propuesta RVIE: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+        logger.error(f"❌ [API] Error inesperado descargando propuesta RVIE: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error interno del servidor: {str(e)}"
+        )
 
 
 @router.post("/aceptar-propuesta", response_model=RvieProcesoResponse)
@@ -275,25 +309,56 @@ async def aceptar_propuesta(
     """
     Aceptar propuesta RVIE de SUNAT
     
-    Acepta la propuesta de ventas e ingresos previamente descargada.
+    Acepta la propuesta de ventas e ingresos previamente descargada según Manual SUNAT v25.
+    
+    - **ruc**: RUC del contribuyente (debe coincidir con la empresa autenticada)
+    - **periodo**: Período en formato YYYYMM
+    - **acepta_completa**: True para aceptar propuesta completa, False para parcial
+    - **observaciones**: Observaciones opcionales del contribuyente (máx. 500 caracteres)
+    
+    **Flujo**:
+    1. Valida que existe una propuesta descargada
+    2. Verifica que el estado permite aceptación
+    3. Envía aceptación a SUNAT
+    4. Actualiza estado del proceso a ACEPTADO
+    5. Retorna resultado con ticket ID para seguimiento
     """
     try:
-        logger.info(f"Aceptando propuesta RVIE para RUC {request.ruc}, período {request.periodo}")
+        logger.info(f"🚀 [API] Aceptando propuesta RVIE para RUC {request.ruc}, período {request.periodo}")
         
-        # Ejecutar aceptación de propuesta
+        # Validar que el RUC coincide con la empresa autenticada
+        if request.ruc != company.ruc:
+            raise HTTPException(
+                status_code=403, 
+                detail=f"RUC solicitado {request.ruc} no coincide con empresa autenticada {company.ruc}"
+            )
+        
+        # Ejecutar aceptación de propuesta con parámetros mejorados
         resultado = await rvie_service.aceptar_propuesta(
             ruc=request.ruc,
-            periodo=request.periodo
+            periodo=request.periodo,
+            acepta_completa=getattr(request, 'acepta_completa', True),
+            observaciones=getattr(request, 'observaciones', None)
         )
         
-        logger.info(f"Propuesta RVIE aceptada exitosamente para {request.ruc}-{request.periodo}")
+        # Registrar auditoría de la operación
+        logger.info(
+            f"✅ [API] Propuesta RVIE aceptada exitosamente. "
+            f"RUC: {request.ruc}, Período: {request.periodo}, "
+            f"Estado: {resultado.estado}, Ticket: {resultado.ticket_id}"
+        )
+        
         return resultado
         
     except HTTPException:
+        # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
-        logger.error(f"Error aceptando propuesta RVIE: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+        logger.error(f"❌ [API] Error inesperado aceptando propuesta RVIE: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error interno del servidor: {str(e)}"
+        )
 
 
 @router.post("/reemplazar-propuesta", response_model=RvieProcesoResponse)
@@ -494,6 +559,40 @@ async def procesar_ticket_background(ticket_id: str, ruc: str, periodo: str, ope
             error_mensaje=str(e)
         )
         logger.error(f"Error procesando ticket {ticket_id}: {str(e)}")
+
+
+@router.get("/tickets/{ruc}", response_model=List[RvieTicketResponse])
+async def listar_tickets(
+    ruc: str,
+    limit: int = 50,
+    skip: int = 0,
+    company: CompanyModel = Depends(validate_ruc_access),
+    rvie_service: RvieService = Depends(get_rvie_service)
+):
+    """
+    Listar todos los tickets RVIE de un RUC
+    
+    Obtiene la lista de todos los tickets generados para el RUC especificado.
+    """
+    try:
+        logger.info(f"Listando tickets RVIE para RUC {ruc} (skip={skip}, limit={limit})")
+        
+        # Obtener tickets desde la base de datos
+        tickets = await rvie_service.listar_tickets_por_ruc(
+            ruc=ruc,
+            limit=limit,
+            skip=skip
+        )
+        
+        logger.info(f"Tickets RVIE encontrados: {len(tickets)} para RUC {ruc}")
+        return tickets
+        
+    except Exception as e:
+        logger.error(f"Error listando tickets RVIE para RUC {ruc}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error listando tickets: {str(e)}"
+        )
 
 
 @router.get("/ticket/{ruc}/{ticket_id}", response_model=RvieTicketResponse)

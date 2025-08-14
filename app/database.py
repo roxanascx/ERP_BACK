@@ -27,5 +27,22 @@ async def close_mongo_connection():
         print("❌ Conexión a MongoDB cerrada")
 
 def get_database():
-    """Obtener la instancia de la base de datos"""
+    """Obtener la instancia de la base de datos de forma síncrona"""
+    global database
+    
+    # Si no está inicializada, crear conexión síncrona
+    if database is None:
+        client = AsyncIOMotorClient(MONGODB_URL)
+        database = client.erp_db
+    
+    return database
+
+# Función async para obtener database (para nuevos módulos SIRE)
+async def get_database_async():
+    """Obtener la instancia de la base de datos de forma asíncrona"""
+    global client, database
+    
+    if database is None:
+        await connect_to_mongo()
+    
     return database

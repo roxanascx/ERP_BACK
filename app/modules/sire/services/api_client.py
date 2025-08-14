@@ -26,9 +26,34 @@ class SunatApiClient:
             base_url: URL base de la API SUNAT (usar prod o testing)
             timeout: Timeout para requests en segundos
         """
-        # URLs de SUNAT (cambiar según entorno)
-        self.base_url = base_url or "https://api-sire.sunat.gob.pe"
+        # URLs de SUNAT según Manual v25 (cambiar según entorno)
+        # Producción: https://api-sire.sunat.gob.pe/v1
+        # Testing: https://api-sire-qa.sunat.gob.pe/v1
+        self.base_url = base_url or "https://api-sire.sunat.gob.pe/v1"
         self.auth_url = "https://api-seguridad.sunat.gob.pe/v1/clientessol"
+        
+        # Endpoints específicos según manual SUNAT
+        self.endpoints = {
+            # Autenticación
+            "auth_token": "/clientessol/{client_id}/oauth2/token",
+            
+            # RVIE - Registro de Ventas e Ingresos Electrónico
+            "rvie_descargar_propuesta": "/sire/rvie/propuesta/descargar",
+            "rvie_aceptar_propuesta": "/sire/rvie/propuesta/aceptar", 
+            "rvie_reemplazar_propuesta": "/sire/rvie/propuesta/reemplazar",
+            "rvie_registrar_preliminar": "/sire/rvie/preliminar/registrar",
+            "rvie_inconsistencias": "/sire/rvie/inconsistencias/descargar",
+            
+            # Gestión de Tickets
+            "consultar_ticket": "/sire/ticket/{ticket_id}/estado",
+            "descargar_archivo": "/sire/archivo/{ticket_id}/descargar",
+            
+            # RCE - Registro de Compras Electrónico
+            "rce_descargar_propuesta": "/sire/rce/propuesta/descargar",
+            "rce_resumen_consolidado": "/sire/rce/resumen/consolidado",
+            "rce_inconsistencias_montos": "/sire/rce/inconsistencias/montos",
+            "rce_inconsistencias_comprobantes": "/sire/rce/inconsistencias/comprobantes"
+        }
         
         self.timeout = timeout
         self.max_retries = 3

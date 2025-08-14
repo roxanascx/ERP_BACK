@@ -26,9 +26,17 @@ from pydantic import BaseModel, Field, validator
 
 
 class RvieDescargarPropuestaRequest(BaseModel):
-    """Request para descargar propuesta RVIE"""
+    """Request para descargar propuesta RVIE según Manual SUNAT v25"""
     ruc: str = Field(..., description="RUC del contribuyente", min_length=11, max_length=11)
     periodo: str = Field(..., description="Periodo YYYYMM", min_length=6, max_length=6)
+    forzar_descarga: bool = Field(
+        default=False,
+        description="True para forzar nueva descarga ignorando cache"
+    )
+    incluir_detalle: bool = Field(
+        default=True,
+        description="True para incluir detalle completo de comprobantes"
+    )
     
     @validator('ruc')
     def validate_ruc(cls, v):
@@ -51,15 +59,46 @@ class RvieDescargarPropuestaRequest(BaseModel):
 
 
 class RvieAceptarPropuestaRequest(BaseModel):
-    """Request para aceptar propuesta RVIE"""
+    """Request para aceptar propuesta RVIE según Manual SUNAT v25"""
     ruc: str = Field(..., description="RUC del contribuyente", min_length=11, max_length=11)
     periodo: str = Field(..., description="Periodo YYYYMM", min_length=6, max_length=6)
-    confirmacion: bool = Field(default=True, description="Confirmación de aceptación")
+    acepta_completa: bool = Field(
+        default=True, 
+        description="True para aceptar propuesta completa, False para aceptación parcial"
+    )
+    observaciones: Optional[str] = Field(
+        None, 
+        description="Observaciones opcionales del contribuyente",
+        max_length=500
+    )
+    confirmacion: bool = Field(
+        default=True, 
+        description="Confirmación explícita de aceptación"
+    )
     
     @validator('ruc')
     def validate_ruc(cls, v):
         if not v.isdigit():
             raise ValueError('RUC debe contener solo dígitos')
+        return v
+    
+    @validator('periodo')
+    def validate_periodo(cls, v):
+        if not v.isdigit():
+            raise ValueError('Periodo debe contener solo dígitos')
+        try:
+            year = int(v[:4])
+            month = int(v[4:])
+            if year < 2000 or year > 2030 or month < 1 or month > 12:
+                raise ValueError('Periodo fuera de rango válido')
+        except:
+            raise ValueError('Formato de periodo inválido')
+        return v
+    
+    @validator('observaciones')
+    def validate_observaciones(cls, v):
+        if v and len(v.strip()) == 0:
+            return None  # Convertir string vacío a None
         return v
 
 
@@ -310,12 +349,17 @@ class RvieTicketResponse(BaseModel):
     ticket_id: str
     estado: str
     descripcion: str
-    fecha_creacion: datetime
-    fecha_actualizacion: datetime
+    fecha_creacion: Optional[datetime] = None
+    fecha_actualizacion: Optional[datetime] = None
+    operacion: str
+    ruc: str
+    periodo: str
+    resultado: Optional[dict] = None
+    error_mensaje: Optional[str] = None
     archivo_nombre: Optional[str] = None
     archivo_disponible: bool = False
+    archivo_size: int = 0
     progreso_porcentaje: Optional[float] = None
-    error_mensaje: Optional[str] = None
     
     class Config:
         json_schema_extra = {
@@ -325,10 +369,15 @@ class RvieTicketResponse(BaseModel):
                 "descripcion": "Proceso completado exitosamente",
                 "fecha_creacion": "2024-08-13T15:30:00",
                 "fecha_actualizacion": "2024-08-13T15:35:00",
+                "operacion": "descargar_propuesta",
+                "ruc": "20100070970",
+                "periodo": "202408",
+                "resultado": {"registros": 150, "total_ventas": 50000.00},
+                "error_mensaje": None,
                 "archivo_nombre": "rvie_202408.zip",
                 "archivo_disponible": True,
-                "progreso_porcentaje": 100.0,
-                "error_mensaje": None
+                "archivo_size": 1024576,
+                "progreso_porcentaje": 100.0
             }
         }
 

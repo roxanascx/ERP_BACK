@@ -125,6 +125,21 @@ async def test_database():
 app.include_router(users.router, prefix="/api/users", tags=["Usuarios"])
 app.include_router(api_router)  # Incluye companies y sire con prefijo /api/v1
 
+# Eventos de ciclo de vida de la aplicación
+@app.on_event("startup")
+async def startup_event():
+    """Inicializar conexiones al arrancar la aplicación"""
+    print("🚀 Iniciando aplicación...")
+    await connect_to_mongo()
+    print("✅ Aplicación lista")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cerrar conexiones al apagar la aplicación"""
+    print("🛑 Cerrando aplicación...")
+    await close_mongo_connection()
+    print("✅ Aplicación cerrada")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

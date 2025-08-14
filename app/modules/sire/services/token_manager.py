@@ -80,7 +80,7 @@ class SireTokenManager:
             # Limpiar cache si está muy grande
             await self._cleanup_cache()
             
-            logger.info(f"✅ [TOKEN] Token almacenado para RUC {ruc}, sesión {session_id}")
+            logger.info(f"✅ [TOKEN] Token almacenado para RUC {ruc}")
             return session_id
             
         except Exception as e:
@@ -121,7 +121,6 @@ class SireTokenManager:
             session.last_used = datetime.utcnow()
             await self._update_session_usage(session)
             
-            logger.debug(f"🎯 [TOKEN] Token válido obtenido para RUC {ruc}")
             return session.access_token
             
         except Exception as e:
@@ -142,7 +141,6 @@ class SireTokenManager:
             str: Token de sesión activa o None si no existe
         """
         try:
-            logger.debug(f"🔍 [TOKEN] Obteniendo sesión activa para RUC {ruc} (sin renovación)")
             
             # Buscar sesión activa
             session = await self._find_active_session(ruc)
@@ -159,7 +157,6 @@ class SireTokenManager:
             session.last_used = datetime.utcnow()
             await self._update_session_usage(session)
             
-            logger.debug(f"✅ [TOKEN] Token activo obtenido para RUC {ruc}")
             return session.access_token
             
         except Exception as e:
@@ -200,7 +197,6 @@ class SireTokenManager:
                     session.is_active = False
                     revoked_count += 1
             
-            logger.info(f"🚫 [TOKEN] {revoked_count} tokens revocados para RUC {ruc}")
             return revoked_count > 0
             
         except Exception as e:
@@ -292,29 +288,22 @@ class SireTokenManager:
     
     async def _find_active_session(self, ruc: str) -> Optional[SireSession]:
         """Buscar sesión activa para RUC"""
-        logger.debug(f"🔍 [TOKEN] Buscando sesión activa para RUC {ruc}")
         
         # Buscar en Redis primero
         if self.redis_client:
-            logger.debug(f"🔍 [TOKEN] Buscando en Redis...")
             try:
                 keys = await self.redis_client.keys(f"sire_session_{ruc}_*")
-                logger.debug(f"🔍 [TOKEN] Keys encontradas en Redis: {keys}")
                 for key in keys:
                     session_data = await self.redis_client.get(key)
                     if session_data:
                         session = SireSession.model_validate_json(session_data)
                         if session.is_active and session.expires_at > datetime.utcnow():
-                            logger.debug(f"✅ [TOKEN] Sesión activa encontrada en Redis: {key}")
                             return session
             except Exception as e:
                 logger.warning(f"⚠️ [TOKEN] Error buscando en Redis: {e}")
-        else:
-            logger.debug(f"⚠️ [TOKEN] Redis no disponible")
         
         # Buscar en MongoDB
         if self.mongo_collection is not None:
-            logger.debug(f"🔍 [TOKEN] Buscando en MongoDB...")
             try:
                 session_doc = await self.mongo_collection.find_one({
                     "ruc": ruc,
@@ -323,21 +312,15 @@ class SireTokenManager:
                 }, sort=[("created_at", -1)])
                 
                 if session_doc:
-                    logger.debug(f"✅ [TOKEN] Sesión activa encontrada en MongoDB")
                     return SireSession(**session_doc)
-                else:
-                    logger.debug(f"⚠️ [TOKEN] No se encontró sesión activa en MongoDB")
             except Exception as e:
                 logger.warning(f"⚠️ [TOKEN] Error buscando en MongoDB: {e}")
-        else:
-            logger.debug(f"⚠️ [TOKEN] MongoDB no disponible")
         
         # Buscar en cache de memoria
-        logger.debug(f"🔍 [TOKEN] Buscando en cache de memoria... {len(self.token_cache)} sesiones")
         for session_id, session in self.token_cache.items():
             if (session.ruc == ruc and session.is_active and 
                 session.expires_at > datetime.utcnow()):
-                logger.debug(f"✅ [TOKEN] Sesión activa encontrada en cache: {session_id}")
+                return session
                 return session
         
         logger.warning(f"⚠️ [TOKEN] No se encontró sesión activa para RUC {ruc} en ningún lugar")
@@ -389,4 +372,3 @@ class SireTokenManager:
             new_cache = dict(sorted_sessions[-keep_count:])
             self.token_cache = new_cache
             
-            logger.info(f"🧹 [TOKEN] Cache limpiado, manteniendo {keep_count} sesiones")

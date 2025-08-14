@@ -14,6 +14,10 @@ from ..models.tickets import (
     SireTicket, TicketStatus, TicketOperationType, 
     TicketPriority, TicketResponse, TicketSummary
 )
+from ..models.sunat_ticket import (
+    SunatTicketRequest, SunatTicketResponse, SunatTicketStatusResponse,
+    SunatOperationType, SunatTicketStatus, map_sunat_error
+)
 from ..repositories.ticket_repository import SireTicketRepository
 from .rvie_service import RvieService
 from .token_manager import SireTokenManager
@@ -43,21 +47,56 @@ class SireTicketService:
                            operation_params: Dict[str, Any],
                            priority: TicketPriority = TicketPriority.NORMAL,
                            user_id: Optional[str] = None) -> TicketResponse:
-        """Crear un nuevo ticket y programar su ejecución"""
+        """Crear un nuevo ticket y programar su ejecución con validación SUNAT"""
         try:
             # Verificar que hay sesión activa para el RUC
             session = await self.token_manager.get_active_session(ruc)
             if not session or not session.get('access_token'):
                 raise ValueError(f"No hay sesión activa para RUC {ruc}")
             
-            # Crear el ticket
-            ticket = SireTicket.create_new(
+            # Validar parámetros según el manual SUNAT
+            await self._validate_operation_params(operation_type, operation_params)
+            
+            # Mapear operación interna a operación SUNAT
+            sunat_operation = self._map_to_sunat_operation(operation_type)
+            
+            # Crear request para SUNAT
+            sunat_request = SunatTicketRequest(
                 ruc=ruc,
-                operation_type=operation_type,
-                operation_params=operation_params,
-                priority=priority,
-                user_id=user_id
+                periodo=operation_params.get('periodo', ''),
+                operacion=sunat_operation,
+                parametros=operation_params
             )
+            
+            # Crear ticket en SUNAT primero
+            try:
+                sunat_response = await self._create_sunat_ticket(sunat_request, session['access_token'])
+                
+                # Crear el ticket local con ID de SUNAT
+                ticket = SireTicket.create_new(
+                    ruc=ruc,
+                    operation_type=operation_type,
+                    operation_params=operation_params,
+                    priority=priority,
+                    user_id=user_id
+                )
+                
+                # Usar ID de ticket de SUNAT
+                ticket.ticket_id = sunat_response.ticket
+                ticket.status_message = f"Ticket creado en SUNAT: {sunat_response.mensaje}"
+                
+            except Exception as sunat_error:
+                self.logger.warning(f"Error creando ticket en SUNAT: {sunat_error}")
+                
+                # Fallback: crear ticket local para testing
+                ticket = SireTicket.create_new(
+                    ruc=ruc,
+                    operation_type=operation_type,
+                    operation_params=operation_params,
+                    priority=priority,
+                    user_id=user_id
+                )
+                ticket.status_message = f"Ticket en modo testing (SUNAT no disponible)"
             
             # Calcular duración estimada
             ticket.estimated_duration = self._estimate_duration(operation_type, operation_params)
@@ -109,6 +148,200 @@ class SireTicketService:
             operation_params=operation_params,
             priority=priority
         )
+    
+        
+    # ==================== VALIDACIONES SEGÚN MANUAL SUNAT ====================
+    
+    async def _validate_operation_params(self, operation_type: TicketOperationType, params: Dict[str, Any]):
+        """Validar parámetros de operación según manual SUNAT v25"""
+        # Validación de RUC
+        ruc = params.get('ruc', '')
+        if not ruc or len(ruc) != 11 or not ruc.isdigit():
+            raise ValueError("RUC debe tener 11 dígitos")
+        
+        # Validación de período
+        periodo = params.get('periodo', '')
+        if not periodo or len(periodo) != 6 or not periodo.isdigit():
+            raise ValueError("Período debe tener formato YYYYMM")
+        
+        # Validaciones específicas por tipo de operación
+        if operation_type == TicketOperationType.DESCARGAR_PROPUESTA:
+            # Validar que el período sea válido (no futuro)
+            year = int(periodo[:4])
+            month = int(periodo[4:])
+            if year < 2018 or year > datetime.now().year:
+                raise ValueError(f"Año {year} no válido para RVIE")
+            if month < 1 or month > 12:
+                raise ValueError(f"Mes {month} no válido")
+            
+            # No permitir períodos futuros
+            current_year = datetime.now().year
+            current_month = datetime.now().month
+            if year > current_year or (year == current_year and month > current_month):
+                raise ValueError(f"Período {periodo} es futuro, no permitido")
+    
+    def _map_to_sunat_operation(self, operation_type: TicketOperationType) -> SunatOperationType:
+        """Mapear operación interna a operación SUNAT"""
+        mapping = {
+            TicketOperationType.DESCARGAR_PROPUESTA: SunatOperationType.RVIE_DESCARGAR_PROPUESTA,
+            TicketOperationType.ACEPTAR_PROPUESTA: SunatOperationType.RVIE_ACEPTAR_PROPUESTA,
+            TicketOperationType.REEMPLAZAR_PROPUESTA: SunatOperationType.RVIE_REEMPLAZAR_PROPUESTA,
+            TicketOperationType.REGISTRAR_PRELIMINAR: SunatOperationType.RVIE_REGISTRAR_PRELIMINAR,
+            TicketOperationType.DESCARGAR_INCONSISTENCIAS: SunatOperationType.RVIE_DESCARGAR_INCONSISTENCIAS,
+        }
+        
+        sunat_op = mapping.get(operation_type)
+        if not sunat_op:
+            raise ValueError(f"Operación {operation_type} no soportada")
+        
+        return sunat_op
+    
+    async def _create_sunat_ticket(self, request: SunatTicketRequest, access_token: str) -> SunatTicketResponse:
+        """Crear ticket directamente en SUNAT"""
+        try:
+            # Construir endpoint según el tipo de operación
+            endpoint = self._get_sunat_endpoint(request.operacion)
+            
+            # Preparar headers y datos
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            }
+            
+            # Datos específicos para SUNAT
+            payload = {
+                'ruc': request.ruc,
+                'periodo': request.periodo,
+                'parametros': request.parametros
+            }
+            
+            # Hacer request a SUNAT
+            response = await self.rvie_service.api_client._make_request(
+                method='POST',
+                url=f"{self.rvie_service.api_client.base_url}{endpoint}",
+                headers=headers,
+                data=payload
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return SunatTicketResponse(
+                    ticket=data['ticket'],
+                    fecha_generacion=datetime.fromisoformat(data['fecha_generacion']),
+                    estado=SunatTicketStatus(data['estado']),
+                    mensaje=data.get('mensaje', 'Ticket creado')
+                )
+            else:
+                error_data = response.json()
+                raise ValueError(f"Error SUNAT: {error_data.get('mensaje', 'Error desconocido')}")
+                
+        except Exception as e:
+            self.logger.error(f"Error comunicándose con SUNAT: {e}")
+            raise
+    
+    def _get_sunat_endpoint(self, operation: SunatOperationType) -> str:
+        """Obtener endpoint SUNAT según operación"""
+        endpoints = {
+            SunatOperationType.RVIE_DESCARGAR_PROPUESTA: "/sire/rvie/propuesta/descargar",
+            SunatOperationType.RVIE_ACEPTAR_PROPUESTA: "/sire/rvie/propuesta/aceptar",
+            SunatOperationType.RVIE_REEMPLAZAR_PROPUESTA: "/sire/rvie/propuesta/reemplazar",
+            SunatOperationType.RVIE_REGISTRAR_PRELIMINAR: "/sire/rvie/preliminar/registrar",
+            SunatOperationType.RVIE_DESCARGAR_INCONSISTENCIAS: "/sire/rvie/inconsistencias/descargar",
+        }
+        
+        return endpoints.get(operation, "/sire/rvie/operacion")
+    
+    async def sync_with_sunat_status(self, ticket_id: str) -> bool:
+        """Sincronizar estado de ticket con SUNAT"""
+        try:
+            # Obtener ticket local
+            ticket = await self.ticket_repo.get_ticket(ticket_id)
+            if not ticket:
+                return False
+            
+            # Obtener sesión activa
+            session = await self.token_manager.get_active_session(ticket.ruc)
+            if not session:
+                self.logger.warning(f"No hay sesión activa para sincronizar ticket {ticket_id}")
+                return False
+            
+            # Consultar estado en SUNAT
+            sunat_status = await self._query_sunat_ticket_status(ticket_id, session['access_token'])
+            
+            # Mapear estado SUNAT a estado interno
+            internal_status = self._map_sunat_status(sunat_status.estado)
+            
+            # Actualizar ticket local
+            if internal_status != ticket.status:
+                ticket.update_status(
+                    new_status=internal_status,
+                    message=sunat_status.mensaje,
+                    progress=sunat_status.porcentaje_avance
+                )
+                
+                # Si está terminado, actualizar info del archivo
+                if internal_status == TicketStatus.TERMINADO and sunat_status.nombre_archivo:
+                    ticket.set_completed(
+                        file_name=sunat_status.nombre_archivo,
+                        file_size=sunat_status.tamaño_archivo or 0,
+                        file_type="ZIP",
+                        file_hash=sunat_status.hash_archivo or ""
+                    )
+                
+                # Si hay error, actualizar info del error
+                elif internal_status == TicketStatus.ERROR:
+                    ticket.set_error(
+                        error_code=sunat_status.codigo_error or "UNKNOWN",
+                        error_message=sunat_status.detalle_error or sunat_status.mensaje
+                    )
+                
+                # Guardar cambios
+                await self.ticket_repo.update_ticket_status(
+                    ticket_id=ticket_id,
+                    status=internal_status,
+                    message=sunat_status.mensaje,
+                    progress=sunat_status.porcentaje_avance
+                )
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error sincronizando con SUNAT ticket {ticket_id}: {e}")
+            return False
+    
+    async def _query_sunat_ticket_status(self, ticket_id: str, access_token: str) -> SunatTicketStatusResponse:
+        """Consultar estado de ticket en SUNAT"""
+        try:
+            endpoint = f"/sire/ticket/{ticket_id}/estado"
+            headers = {'Authorization': f'Bearer {access_token}'}
+            
+            response = await self.rvie_service.api_client._make_request(
+                method='GET',
+                url=f"{self.rvie_service.api_client.base_url}{endpoint}",
+                headers=headers
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return SunatTicketStatusResponse(**data)
+            else:
+                raise ValueError(f"Error consultando ticket en SUNAT: {response.status_code}")
+                
+        except Exception as e:
+            self.logger.error(f"Error consultando estado en SUNAT: {e}")
+            raise
+    
+    def _map_sunat_status(self, sunat_status: SunatTicketStatus) -> TicketStatus:
+        """Mapear estado SUNAT a estado interno"""
+        mapping = {
+            SunatTicketStatus.PENDIENTE: TicketStatus.PENDIENTE,
+            SunatTicketStatus.PROCESANDO: TicketStatus.PROCESANDO,
+            SunatTicketStatus.TERMINADO: TicketStatus.TERMINADO,
+            SunatTicketStatus.ERROR: TicketStatus.ERROR,
+            SunatTicketStatus.CANCELADO: TicketStatus.CANCELADO,
+        }
+        
+        return mapping.get(sunat_status, TicketStatus.ERROR)
     
     # ==================== CONSULTAR TICKETS ====================
     

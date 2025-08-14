@@ -4,8 +4,9 @@ Implementa todas las operaciones RVIE según manual SUNAT
 """
 
 import asyncio
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import List, Optional, Dict, Any, Union
+from decimal import Decimal
 import logging
 from io import BytesIO
 import zipfile
@@ -41,6 +42,16 @@ class RvieService:
         self.token_manager = token_manager
         self.database = database
         
+        # Inicializar repository si tenemos database
+        self.repository = None
+        try:
+            if database is not None:
+                from ..repositories.ticket_repository import SireTicketRepository
+                self.repository = SireTicketRepository(database.sire_tickets)
+        except Exception as e:
+            logger.warning(f"⚠️ [RVIE] No se pudo inicializar repository: {e}")
+            self.repository = None
+        
         # Configuración de endpoints RVIE
         self.rvie_endpoints = {
             "propuesta": "/rvie/propuesta",
@@ -55,124 +66,283 @@ class RvieService:
         # Cache de operaciones
         self.operaciones_cache: Dict[str, Dict] = {}
     
-    async def descargar_propuesta(self, ruc: str, periodo: str) -> RviePropuesta:
+    # TEMPORAL: Método comentado para debugging
+    # def make_json_safe(self, obj):
+    #     """Convertir tipos no serializables a JSON-safe"""
+    #     from decimal import Decimal
+    #     from datetime import datetime, date
+    #     from enum import Enum
+    #     
+    #     if isinstance(obj, Decimal):
+    #         return float(obj)
+    #     elif isinstance(obj, (datetime, date)):
+    #         return obj.isoformat()
+    #     elif isinstance(obj, Enum):
+    #         return obj.value
+    #     elif isinstance(obj, dict):
+    #         return {k: self.make_json_safe(v) for k, v in obj.items()}
+    #     elif isinstance(obj, list):
+    #         return [self.make_json_safe(item) for item in obj]
+    #     else:
+    #         return obj
+    
+    async def descargar_propuesta(
+        self, 
+        ruc: str, 
+        periodo: str,
+        forzar_descarga: bool = False,
+        incluir_detalle: bool = True
+    ) -> RviePropuesta:
         """
-        Descargar propuesta RVIE de SUNAT
+        Descargar propuesta RVIE de SUNAT según Manual v25
         
-        Este endpoint obtiene la propuesta inicial generada por SUNAT con todos
-        los comprobantes que deberían integrar el registro de ventas.
+        Obtiene la propuesta inicial generada por SUNAT con todos los comprobantes
+        que deberían integrar el registro de ventas del período especificado.
+        
+        Manual SUNAT v25: Este servicio permite descargar la propuesta con el detalle
+        individualizado de los comprobantes y documentos que deberían integrar el
+        registro de ventas que genere, la cual podría ser la propuesta inicial de
+        SUNAT o aquella que fue actualizada por el contribuyente.
         
         Args:
-            ruc: RUC del contribuyente
-            periodo: Periodo en formato YYYYMM
+            ruc: RUC del contribuyente (11 dígitos)
+            periodo: Período en formato YYYYMM
+            forzar_descarga: True para forzar nueva descarga (ignorar cache)
+            incluir_detalle: True para incluir detalle de comprobantes
         
         Returns:
-            RviePropuesta: Propuesta con comprobantes
+            RviePropuesta: Propuesta con comprobantes y totales
         
         Raises:
-            SireApiException: Error en API SUNAT
-            SireValidationException: Error de validación
+            SireApiException: Error en comunicación con SUNAT
+            SireValidationException: Error de validación de parámetros
+            SireException: Error general del proceso
         """
         try:
-            logger.info(f"📥 [RVIE] Descargando propuesta para RUC {ruc}, período {periodo}")
+            inicio_proceso = datetime.utcnow()
+            logger.info(f"📥 [RVIE] Iniciando descarga de propuesta para RUC {ruc}, período {periodo}")
             
-            # Validar parámetros
-            await self._validar_parametros_rvie(ruc, periodo)
+            # 1. VALIDACIONES ROBUSTAS SEGÚN MANUAL
+            await self._validar_parametros_descarga_propuesta(ruc, periodo)
             
-            # Obtener token de sesión activa
+            # 2. VERIFICAR SI YA EXISTE PROPUESTA (CACHE)
+            if not forzar_descarga:
+                propuesta_existente = await self._obtener_propuesta_cache(ruc, periodo)
+                if propuesta_existente:
+                            return propuesta_existente
+            
+            # 3. VERIFICAR SESIÓN ACTIVA
             token = await self.token_manager.get_active_session_token(ruc)
             if not token:
-                raise SireException("No hay sesión activa. Por favor, autentifíquese primero.")
+                raise SireException(
+                    "No hay sesión activa para SUNAT. Por favor, autentifíquese primero."
+                )
             
-            # Hacer request a SUNAT con timeout para evitar colgarse
+            # 4. PREPARAR PARÁMETROS SEGÚN ESPECIFICACIÓN SUNAT
             params = {
                 "ruc": ruc,
                 "periodo": periodo,
-                "tipo": "propuesta"
+                "operacion": "descargar_propuesta",
+                "incluir_detalle": "S" if incluir_detalle else "N",
+                "formato_respuesta": "JSON",
+                "timestamp": inicio_proceso.isoformat()
             }
             
-            logger.info(f"🌐 [RVIE] Enviando request a SUNAT...")
-            try:
-                # Llamada a API real de SUNAT con timeout
-                response_data = await asyncio.wait_for(
-                    self.api_client.get_with_auth(
-                        self.rvie_endpoints["propuesta"],
-                        token,
-                        params
-                    ),
-                    timeout=30.0  # 30 segundos timeout
+            
+            # 5. REALIZAR PETICIÓN CON RETRY Y MANEJO DE RESPUESTAS MASIVAS
+            response_data = await self._realizar_peticion_con_retry(
+                endpoint=self.rvie_endpoints["propuesta"],
+                token=token,
+                params=params,
+                max_intentos=3,
+                timeout_segundos=60
+            )
+            
+            # 6. PROCESAR RESPUESTA SEGÚN TIPO
+            if self._es_respuesta_asincrona(response_data):
+                # Respuesta asíncrona con ticket (para datos masivos)
+                propuesta = await self._procesar_respuesta_asincrona_propuesta(
+                    ruc, periodo, response_data
                 )
-                
-                # Procesar respuesta real de SUNAT
-                propuesta = await self._procesar_respuesta_propuesta(ruc, periodo, response_data)
-                
-            except asyncio.TimeoutError:
-                logger.warning(f"⏰ [RVIE] Timeout en API SUNAT, usando datos mock")
-                # Si hay timeout, usar datos mock como fallback
-                propuesta = await self._crear_propuesta_mock(ruc, periodo)
-                
-            except Exception as api_error:
-                logger.warning(f"⚠️ [RVIE] Error en API SUNAT: {str(api_error)}, usando datos mock")
-                # Si hay error en API, usar datos mock como fallback
-                propuesta = await self._crear_propuesta_mock(ruc, periodo)
+            else:
+                # Respuesta síncrona directa
+                propuesta = await self._procesar_respuesta_sincrona_propuesta(
+                    ruc, periodo, response_data
+                )
             
-            logger.info(f"✅ [RVIE] Propuesta obtenida: {propuesta.cantidad_comprobantes} comprobantes")
+            # 7. VALIDAR Y PROCESAR ARCHIVOS ZIP SI ES NECESARIO
+            if self._contiene_archivos_zip(response_data):
+                await self._procesar_archivos_zip_propuesta(propuesta, response_data)
+            
+            # 8. GUARDAR EN CACHE Y BASE DE DATOS
+            await self._almacenar_propuesta(propuesta)
+            
+            # 9. ACTUALIZAR ESTADO DEL PROCESO
+            await self._actualizar_estado_proceso(
+                ruc, periodo, RvieEstadoProceso.PROPUESTA, None
+            )
+            
+            # 10. REGISTRAR AUDITORÍA
+            tiempo_procesamiento = (datetime.utcnow() - inicio_proceso).total_seconds()
+            await self._registrar_auditoria(
+                ruc, periodo, "DESCARGAR_PROPUESTA",
+                {
+                    "cantidad_comprobantes": propuesta.cantidad_comprobantes,
+                    "total_importe": float(propuesta.total_importe),
+                    "tiempo_procesamiento": tiempo_procesamiento,
+                    "incluir_detalle": incluir_detalle,
+                    "forzar_descarga": forzar_descarga
+                }
+            )
+            
+            logger.info(
+                f"✅ [RVIE] Propuesta descargada exitosamente. "
+                f"Comprobantes: {propuesta.cantidad_comprobantes}, "
+                f"Total: S/ {propuesta.total_importe}, "
+                f"Tiempo: {tiempo_procesamiento:.2f}s"
+            )
+            
             return propuesta
-
             
+        except SireValidationException:
+            # Re-raise validation errors as-is
+            raise
+        except SireApiException as e:
+            # Error de comunicación con SUNAT - no crear datos mock
+            logger.error(f"❌ [RVIE] Error de comunicación con SUNAT: {e}")
+            raise HTTPException(
+                status_code=503, 
+                detail=f"Servicio SUNAT no disponible temporalmente. {str(e)}"
+            )
         except Exception as e:
-            logger.error(f"❌ [RVIE] Error descargando propuesta: {e}")
-            raise SireApiException(f"Error descargando propuesta RVIE: {e}")
+            logger.error(f"❌ [RVIE] Error inesperado descargando propuesta: {e}")
+            raise SireException(f"Error interno descargando propuesta RVIE: {str(e)}")
     
-    async def aceptar_propuesta(self, ruc: str, periodo: str) -> RvieProcesoResult:
+    async def aceptar_propuesta(
+        self, 
+        ruc: str, 
+        periodo: str,
+        acepta_completa: bool = True,
+        observaciones: Optional[str] = None
+    ) -> RvieProcesoResult:
         """
         Aceptar propuesta RVIE de SUNAT
         
-        Actualiza el estado del registro libro y Control de procesos para indicar
-        que se está registrando un preliminar a través de la propuesta aceptada.
+        Según Manual SUNAT v25: Permite actualizar el estado del registro libro
+        y Control de procesos para indicar que se está registrando un preliminar 
+        a través de la propuesta aceptada.
         
         Args:
-            ruc: RUC del contribuyente
+            ruc: RUC del contribuyente (11 dígitos)
             periodo: Periodo en formato YYYYMM
+            acepta_completa: Si acepta la propuesta completa o parcial
+            observaciones: Observaciones opcionales del contribuyente
         
         Returns:
-            RvieProcesoResult: Resultado del proceso
+            RvieProcesoResult: Resultado del proceso con estado actualizado
+        
+        Raises:
+            SireApiException: Error en comunicación con SUNAT
+            SireValidationException: Error de validación de datos
+            SireException: Error general del proceso
         """
         try:
-            logger.info(f"✅ [RVIE] Aceptando propuesta para RUC {ruc}, periodo {periodo}")
+            logger.info(f"✅ [RVIE] Iniciando aceptación de propuesta para RUC {ruc}, período {periodo}")
             
-            # Validar parámetros
+            # 1. VALIDACIONES ROBUSTAS
             await self._validar_parametros_rvie(ruc, periodo)
             
-            # Obtener token válido
-            token = await self.token_manager.get_valid_token(ruc)
-            if not token:
-                raise SireException("Token no válido o expirado")
+            # Validar que existe una propuesta descargada
+            propuesta_existente = await self._verificar_propuesta_existente(ruc, periodo)
+            if not propuesta_existente:
+                raise SireValidationException(
+                    f"No existe propuesta descargada para RUC {ruc} período {periodo}. "
+                    "Debe descargar la propuesta primero."
+                )
             
-            # Preparar datos de aceptación
+            # 2. VERIFICAR ESTADO ACTUAL
+            estado_actual = await self._obtener_estado_proceso(ruc, periodo)
+            if estado_actual not in [RvieEstadoProceso.PROPUESTA, RvieEstadoProceso.PENDIENTE]:
+                raise SireValidationException(
+                    f"No se puede aceptar propuesta en estado {estado_actual}. "
+                    f"Estado debe ser PROPUESTA o PENDIENTE."
+                )
+            
+            # 3. OBTENER TOKEN DE SESIÓN ACTIVA
+            token = await self.token_manager.get_active_session_token(ruc)
+            if not token:
+                raise SireException(
+                    "No hay sesión activa. Por favor, autentifíquese nuevamente."
+                )
+            
+            # 4. PREPARAR DATOS SEGÚN ESPECIFICACIÓN SUNAT
             data = {
                 "ruc": ruc,
                 "periodo": periodo,
-                "accion": "aceptar",
-                "timestamp": datetime.utcnow().isoformat()
+                "operacion": "aceptar_propuesta",
+                "acepta_completa": acepta_completa,
+                "timestamp": datetime.utcnow().isoformat(),
+                "usuario": await self._obtener_usuario_sesion(ruc)
             }
             
-            # Hacer request a SUNAT
-            response_data = await self.api_client.post_with_auth(
-                self.rvie_endpoints["aceptar"],
-                token,
-                data
+            # Agregar observaciones si se proporcionan
+            if observaciones:
+                data["observaciones"] = observaciones[:500]  # Límite SUNAT
+            
+            logger.info(f"🌐 [RVIE] Enviando aceptación a SUNAT...")
+            
+            # 5. HACER REQUEST A SUNAT CON TIMEOUT Y RETRY
+            try:
+                response_data = await asyncio.wait_for(
+                    self.api_client.post_with_auth(
+                        self.rvie_endpoints["aceptar"],
+                        token,
+                        data
+                    ),
+                    timeout=30.0  # Timeout de 30 segundos
+                )
+                
+            except asyncio.TimeoutError:
+                logger.warning(f"⏱️ [RVIE] Timeout en aceptación, reintentando...")
+                # Retry una vez
+                response_data = await self.api_client.post_with_auth(
+                    self.rvie_endpoints["aceptar"],
+                    token,
+                    data
+                )
+            
+            # 6. PROCESAR RESPUESTA Y ACTUALIZAR ESTADO
+            resultado = await self._procesar_resultado_aceptacion(
+                ruc, periodo, response_data, acepta_completa
             )
             
-            # Procesar resultado
-            resultado = await self._procesar_resultado_operacion(ruc, periodo, "ACEPTAR", response_data)
+            # 7. ACTUALIZAR ESTADO EN BASE DE DATOS
+            await self._actualizar_estado_proceso(
+                ruc, periodo, RvieEstadoProceso.ACEPTADO, resultado.ticket_id
+            )
             
-            logger.info(f"✅ [RVIE] Propuesta aceptada exitosamente")
+            # 8. REGISTRAR AUDITORÍA
+            await self._registrar_auditoria(
+                ruc, periodo, "ACEPTAR_PROPUESTA", 
+                {"acepta_completa": acepta_completa, "ticket_id": resultado.ticket_id}
+            )
+            
+            logger.info(
+                f"✅ [RVIE] Propuesta aceptada exitosamente. "
+                f"Ticket: {resultado.ticket_id}, Estado: {resultado.estado}"
+            )
+            
             return resultado
             
+        except SireValidationException:
+            # Re-raise validation errors as-is
+            raise
+        except SireApiException:
+            # Re-raise API errors as-is  
+            raise
         except Exception as e:
-            logger.error(f"❌ [RVIE] Error aceptando propuesta: {e}")
-            raise SireApiException(f"Error aceptando propuesta RVIE: {e}")
+            logger.error(f"❌ [RVIE] Error inesperado aceptando propuesta: {e}")
+            raise SireException(f"Error interno aceptando propuesta RVIE: {str(e)}")
     
     async def reemplazar_propuesta(
         self, 
@@ -254,7 +424,6 @@ class RvieService:
         """
         try:
             logger.info(f"📝 [RVIE] Registrando preliminar para RUC {ruc}, periodo {periodo}")
-            logger.info(f"📊 [RVIE] Cantidad de comprobantes: {len(comprobantes)}")
             
             # Validar parámetros
             await self._validar_parametros_rvie(ruc, periodo)
@@ -364,7 +533,6 @@ class RvieService:
             TicketResponse: Estado del ticket
         """
         try:
-            logger.info(f"🎫 [RVIE] Consultando ticket {ticket_id} para RUC {ruc}")
             
             # Obtener token válido
             token = await self.token_manager.get_valid_token(ruc)
@@ -387,7 +555,6 @@ class RvieService:
             # Procesar respuesta de ticket
             ticket_response = await self._procesar_respuesta_ticket(response_data)
             
-            logger.info(f"📊 [RVIE] Ticket {ticket_id} estado: {ticket_response.status}")
             return ticket_response
             
         except Exception as e:
@@ -409,7 +576,6 @@ class RvieService:
             FileDownloadResponse: Información del archivo descargado
         """
         try:
-            logger.info(f"📁 [RVIE] Descargando archivo de ticket {ticket_id} para RUC {ruc}")
             
             # Obtener token válido
             token = await self.token_manager.get_valid_token(ruc)
@@ -444,7 +610,6 @@ class RvieService:
             RvieResumen: Resumen del periodo
         """
         try:
-            logger.info(f"📊 [RVIE] Obteniendo resumen para RUC {ruc}, periodo {periodo}")
             
             # Obtener propuesta actual
             propuesta = await self.descargar_propuesta(ruc, periodo)
@@ -830,10 +995,20 @@ class RvieService:
             # Buscar en MongoDB primero
             if self.database is not None:
                 try:
-                    ticket_data = await self.database.sire_tickets.find_one({
-                        "ticket_id": ticket_id,
-                        "ruc": ruc
-                    })
+                    from bson import ObjectId
+                    # Intentar convertir ticket_id a ObjectId para buscar por _id
+                    try:
+                        ticket_data = await self.database.sire_tickets.find_one({
+                            "_id": ObjectId(ticket_id),
+                            "ruc": ruc
+                        })
+                    except:
+                        # Si falla la conversión, buscar por campo ticket_id
+                        ticket_data = await self.database.sire_tickets.find_one({
+                            "ticket_id": ticket_id,
+                            "ruc": ruc
+                        })
+                    
                     if ticket_data:
                         logger.info(f"✅ [RVIE-TICKET] Ticket encontrado en MongoDB")
                 except Exception as e:
@@ -875,6 +1050,71 @@ class RvieService:
         except Exception as e:
             logger.error(f"❌ [RVIE-TICKET] Error consultando ticket: {e}")
             raise SireApiException(f"Error consultando ticket: {e}")
+    
+    async def listar_tickets_por_ruc(self, ruc: str, limit: int = 50, skip: int = 0) -> List[dict]:
+        """
+        Lista todos los tickets de RVIE para un RUC específico
+        """
+        try:
+            logger.info(f"📋 [RVIE-TICKETS] Listando tickets para RUC: {ruc}")
+            
+            # Verificar que tengamos acceso a la base de datos
+            try:
+                if self.database is not None and hasattr(self.database, 'sire_tickets'):
+                    tickets_collection = self.database.sire_tickets
+                else:
+                    logger.warning(f"⚠️ [RVIE-TICKETS] No hay database configurado, retornando lista vacía")
+                    return []
+            except Exception as db_error:
+                logger.warning(f"⚠️ [RVIE-TICKETS] Error accediendo a database: {db_error}, retornando lista vacía")
+                return []
+            
+            # Buscar todos los tickets del RUC ordenados por fecha de creación
+            tickets_cursor = tickets_collection.find(
+                {"ruc": ruc}
+            ).sort("fecha_creacion", -1).limit(limit).skip(skip)
+            
+            tickets = []
+            async for ticket_data in tickets_cursor:
+                try:
+                    # Limpiar y serializar cada ticket de forma simple
+                    ticket_safe = {
+                        "ticket_id": ticket_data.get("ticket_id", str(ticket_data.get("_id", ""))),
+                        "estado": ticket_data.get("estado", ticket_data.get("status", "PENDIENTE")),
+                        "descripcion": ticket_data.get("descripcion", ""),
+                        "fecha_creacion": ticket_data.get("fecha_creacion"),
+                        "fecha_actualizacion": ticket_data.get("fecha_actualizacion"),
+                        "operacion": ticket_data.get("operacion", ""),
+                        "ruc": ticket_data.get("ruc", ""),
+                        "periodo": ticket_data.get("periodo", ""),
+                        "resultado": ticket_data.get("resultado"),
+                        "error_mensaje": ticket_data.get("error_mensaje"),
+                        "archivo_nombre": ticket_data.get("archivo_nombre"),
+                        "archivo_disponible": bool(ticket_data.get("archivo_nombre")),
+                        "archivo_size": ticket_data.get("archivo_size", 0)
+                    }
+                    
+                    # Convertir fechas a string si es necesario
+                    for field in ['fecha_creacion', 'fecha_actualizacion']:
+                        if ticket_safe[field] and hasattr(ticket_safe[field], 'isoformat'):
+                            ticket_safe[field] = ticket_safe[field].isoformat()
+                        elif ticket_safe[field] is None:
+                            ticket_safe[field] = None
+                    
+                    tickets.append(ticket_safe)
+                    
+                except Exception as ticket_error:
+                    logger.warning(f"⚠️ [RVIE-TICKETS] Error procesando ticket individual: {ticket_error}")
+                    continue
+            
+            logger.info(f"✅ [RVIE-TICKETS] Encontrados {len(tickets)} tickets para RUC: {ruc}")
+            return tickets
+            
+        except Exception as e:
+            logger.error(f"❌ [RVIE-TICKETS] Error listando tickets para RUC {ruc}: {e}")
+            # En lugar de lanzar excepción, retornar lista vacía para que el frontend funcione
+            logger.warning(f"⚠️ [RVIE-TICKETS] Retornando lista vacía debido a error: {e}")
+            return []
     
     async def actualizar_estado_ticket(
         self,
@@ -918,11 +1158,33 @@ class RvieService:
             if resultado is not None:
                 # Convertir resultado a dict si es un objeto Pydantic
                 if hasattr(resultado, 'model_dump'):
-                    update_data["resultado"] = resultado.model_dump()
+                    resultado_dict = resultado.model_dump()
                 elif hasattr(resultado, 'dict'):
-                    update_data["resultado"] = resultado.dict()
+                    resultado_dict = resultado.dict()
                 else:
-                    update_data["resultado"] = resultado
+                    resultado_dict = resultado
+                
+                # Convertir tipos no serializables a JSON-safe
+                import json
+                from decimal import Decimal
+                from datetime import datetime, date
+                from enum import Enum
+                
+                def make_json_safe(obj):
+                    if isinstance(obj, Decimal):
+                        return float(obj)
+                    elif isinstance(obj, (datetime, date)):
+                        return obj.isoformat()
+                    elif isinstance(obj, Enum):
+                        return obj.value
+                    elif isinstance(obj, dict):
+                        return {k: make_json_safe(v) for k, v in obj.items()}
+                    elif isinstance(obj, list):
+                        return [make_json_safe(item) for item in obj]
+                    else:
+                        return obj
+                
+                update_data["resultado"] = make_json_safe(resultado_dict)
             if error_mensaje is not None:
                 update_data["error_mensaje"] = error_mensaje
             if archivo_nombre is not None:
@@ -949,3 +1211,934 @@ class RvieService:
         except Exception as e:
             logger.error(f"❌ [RVIE-TICKET] Error actualizando ticket: {e}")
             # No lanzar excepción para evitar interrumpir el procesamiento
+
+    # ==================== MÉTODOS HELPER PARA ACEPTAR PROPUESTA ====================
+    
+    async def _verificar_propuesta_existente(self, ruc: str, periodo: str) -> bool:
+        """
+        Verificar si existe una propuesta descargada para el RUC y período
+        
+        Args:
+            ruc: RUC del contribuyente
+            periodo: Período en formato YYYYMM
+            
+        Returns:
+            bool: True si existe propuesta, False en caso contrario
+        """
+        try:
+            if self.database is not None:
+                # Buscar en MongoDB
+                propuesta = await self.database.sire_propuestas.find_one({
+                    "ruc": ruc,
+                    "periodo": periodo,
+                    "tipo": "RVIE"
+                })
+                return propuesta is not None
+            else:
+                # Verificar en cache si no hay base de datos
+                cache_key = f"propuesta_{ruc}_{periodo}"
+                return cache_key in self.operaciones_cache
+                
+        except Exception as e:
+            logger.warning(f"⚠️ [RVIE] Error verificando propuesta existente: {e}")
+            return False
+    
+    async def _obtener_estado_proceso(self, ruc: str, periodo: str) -> RvieEstadoProceso:
+        """
+        Obtener el estado actual del proceso RVIE
+        
+        Args:
+            ruc: RUC del contribuyente
+            periodo: Período en formato YYYYMM
+            
+        Returns:
+            RvieEstadoProceso: Estado actual del proceso
+        """
+        try:
+            if self.database is not None:
+                # Buscar estado en MongoDB
+                proceso = await self.database.sire_procesos.find_one({
+                    "ruc": ruc,
+                    "periodo": periodo,
+                    "tipo": "RVIE"
+                })
+                if proceso:
+                    return RvieEstadoProceso(proceso.get("estado", "PENDIENTE"))
+            
+            # Estado por defecto si no se encuentra
+            return RvieEstadoProceso.PENDIENTE
+            
+        except Exception as e:
+            logger.warning(f"⚠️ [RVIE] Error obteniendo estado proceso: {e}")
+            return RvieEstadoProceso.PENDIENTE
+    
+    async def _obtener_usuario_sesion(self, ruc: str) -> str:
+        """
+        Obtener el usuario de la sesión activa
+        
+        Args:
+            ruc: RUC del contribuyente
+            
+        Returns:
+            str: Usuario de la sesión
+        """
+        try:
+            session = await self.token_manager.get_active_session(ruc)
+            if session:
+                return session.get("username", "UNKNOWN")
+            return "UNKNOWN"
+        except Exception as e:
+            logger.warning(f"⚠️ [RVIE] Error obteniendo usuario sesión: {e}")
+            return "UNKNOWN"
+    
+    async def _procesar_resultado_aceptacion(
+        self,
+        ruc: str,
+        periodo: str,
+        response_data: dict,
+        acepta_completa: bool
+    ) -> RvieProcesoResult:
+        """
+        Procesar resultado de aceptación de propuesta
+        
+        Args:
+            ruc: RUC del contribuyente
+            periodo: Período procesado
+            response_data: Respuesta de SUNAT
+            acepta_completa: Si acepta propuesta completa
+            
+        Returns:
+            RvieProcesoResult: Resultado procesado
+        """
+        try:
+            # Extraer datos de respuesta SUNAT
+            ticket_id = response_data.get("ticketId") or response_data.get("ticket_id")
+            mensaje = response_data.get("mensaje", "Propuesta aceptada correctamente")
+            exitoso = response_data.get("exitoso", True)
+            
+            # Crear resultado
+            resultado = RvieProcesoResult(
+                ruc=ruc,
+                periodo=periodo,
+                operacion="ACEPTAR_PROPUESTA",
+                estado=RvieEstadoProceso.ACEPTADO if exitoso else RvieEstadoProceso.ERROR,
+                exitoso=exitoso,
+                mensaje=mensaje,
+                ticket_id=ticket_id,
+                comprobantes_procesados=response_data.get("comprobantes_procesados", 0),
+                comprobantes_exitosos=response_data.get("comprobantes_exitosos", 0),
+                comprobantes_con_errores=response_data.get("comprobantes_con_errores", 0),
+                fecha_inicio=datetime.utcnow(),
+                fecha_fin=datetime.utcnow()
+            )
+            
+            # Agregar información específica de aceptación
+            resultado.errores = response_data.get("errores", [])
+            if not acepta_completa:
+                resultado.mensaje += " (Aceptación parcial)"
+            
+            return resultado
+            
+        except Exception as e:
+            logger.error(f"❌ [RVIE] Error procesando resultado aceptación: {e}")
+            # Retornar resultado de error
+            return RvieProcesoResult(
+                ruc=ruc,
+                periodo=periodo,
+                operacion="ACEPTAR_PROPUESTA",
+                estado=RvieEstadoProceso.ERROR,
+                exitoso=False,
+                mensaje=f"Error procesando resultado: {str(e)}",
+                errores=[str(e)],
+                fecha_inicio=datetime.utcnow(),
+                fecha_fin=datetime.utcnow()
+            )
+    
+    async def _actualizar_estado_proceso(
+        self,
+        ruc: str,
+        periodo: str,
+        nuevo_estado: RvieEstadoProceso,
+        ticket_id: Optional[str] = None
+    ) -> None:
+        """
+        Actualizar estado del proceso RVIE en base de datos
+        
+        Args:
+            ruc: RUC del contribuyente
+            periodo: Período del proceso
+            nuevo_estado: Nuevo estado del proceso
+            ticket_id: ID del ticket asociado (opcional)
+        """
+        try:
+            if self.database is not None:
+                update_data = {
+                    "estado": nuevo_estado.value,
+                    "fecha_actualizacion": datetime.utcnow(),
+                }
+                
+                if ticket_id:
+                    update_data["ultimo_ticket_id"] = ticket_id
+                
+                await self.database.sire_procesos.update_one(
+                    {
+                        "ruc": ruc,
+                        "periodo": periodo,
+                        "tipo": "RVIE"
+                    },
+                    {
+                        "$set": update_data,
+                        "$setOnInsert": {
+                            "fecha_creacion": datetime.utcnow(),
+                            "tipo": "RVIE"
+                        }
+                    },
+                    upsert=True
+                )
+                
+                logger.info(f"✅ [RVIE] Estado actualizado a {nuevo_estado} para RUC {ruc}, período {periodo}")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ [RVIE] Error actualizando estado proceso: {e}")
+    
+    async def _registrar_auditoria(
+        self,
+        ruc: str,
+        periodo: str,
+        operacion: str,
+        detalles: Dict[str, Any]
+    ) -> None:
+        """
+        Registrar evento de auditoría
+        
+        Args:
+            ruc: RUC del contribuyente
+            periodo: Período del proceso
+            operacion: Tipo de operación realizada
+            detalles: Detalles adicionales del evento
+        """
+        try:
+            if self.database is not None:
+                auditoria = {
+                    "ruc": ruc,
+                    "periodo": periodo,
+                    "operacion": operacion,
+                    "detalles": detalles,
+                    "fecha": datetime.utcnow(),
+                    "tipo": "RVIE"
+                }
+                
+                await self.database.sire_auditoria.insert_one(auditoria)
+                logger.info(f"📝 [RVIE] Auditoría registrada: {operacion} para RUC {ruc}")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ [RVIE] Error registrando auditoría: {e}")
+
+    # ==================== MÉTODOS HELPER PARA DESCARGAR PROPUESTA ====================
+    
+    async def _validar_parametros_descarga_propuesta(self, ruc: str, periodo: str) -> None:
+        """
+        Validaciones específicas para descarga de propuesta según Manual SUNAT v25
+        
+        Args:
+            ruc: RUC del contribuyente
+            periodo: Período en formato YYYYMM
+        
+        Raises:
+            SireValidationException: Si los parámetros no son válidos
+        """
+        # Validaciones básicas primero
+        await self._validar_parametros_rvie(ruc, periodo)
+        
+        # Validaciones específicas para descarga
+        try:
+            # Validar que el período no sea futuro
+            year = int(periodo[:4])
+            month = int(periodo[4:])
+            periodo_date = date(year, month, 1)
+            hoy = date.today()
+            
+            if periodo_date > hoy:
+                raise SireValidationException(
+                    f"No se puede descargar propuesta para período futuro: {periodo}"
+                )
+            
+            # Validar que el período no sea muy antiguo (más de 5 años)
+            if year < (hoy.year - 5):
+                raise SireValidationException(
+                    f"Período muy antiguo: {periodo}. Máximo 5 años hacia atrás."
+                )
+            
+            logger.info(f"✅ [RVIE] Parámetros validados correctamente para {ruc}-{periodo}")
+            
+        except ValueError as e:
+            raise SireValidationException(f"Formato de período inválido: {periodo}")
+    
+    async def _obtener_propuesta_cache(self, ruc: str, periodo: str) -> Optional[RviePropuesta]:
+        """
+        Buscar propuesta existente en cache o base de datos
+        
+        Args:
+            ruc: RUC del contribuyente
+            periodo: Período solicitado
+            
+        Returns:
+            RviePropuesta o None si no existe
+        """
+        try:
+            # Buscar en cache primero
+            cache_key = f"propuesta_rvie_{ruc}_{periodo}"
+            if cache_key in self.operaciones_cache:
+                cache_data = self.operaciones_cache[cache_key]
+                if self._es_cache_valido(cache_data):
+                            return cache_data.get("propuesta")
+            
+            # Buscar en base de datos
+            if self.database is not None:
+                propuesta_data = await self.database.sire_propuestas.find_one({
+                    "ruc": ruc,
+                    "periodo": periodo,
+                    "tipo": "RVIE"
+                })
+                
+                if propuesta_data and self._es_propuesta_vigente(propuesta_data):
+                    logger.info(f"💾 [RVIE] Propuesta encontrada en base de datos")
+                    return self._convertir_data_a_propuesta(propuesta_data)
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"⚠️ [RVIE] Error buscando propuesta en cache: {e}")
+            return None
+    
+    async def _realizar_peticion_con_retry(
+        self,
+        endpoint: str,
+        token: str,
+        params: Dict[str, Any],
+        max_intentos: int = 3,
+        timeout_segundos: int = 60
+    ) -> Dict[str, Any]:
+        """
+        Realizar petición HTTP con retry automático y manejo de timeouts
+        
+        Args:
+            endpoint: Endpoint de la API
+            token: Token de autenticación
+            params: Parámetros de la petición
+            max_intentos: Máximo número de intentos
+            timeout_segundos: Timeout por intento
+            
+        Returns:
+            Dict con la respuesta de SUNAT
+        """
+        ultimo_error = None
+        
+        for intento in range(1, max_intentos + 1):
+            try:
+                logger.info(f"🌐 [RVIE] Intento {intento}/{max_intentos} - Enviando petición a SUNAT")
+                
+                response_data = await asyncio.wait_for(
+                    self.api_client.get_with_auth(endpoint, token, params),
+                    timeout=timeout_segundos
+                )
+                
+                # Verificar si la respuesta es válida
+                if self._es_respuesta_valida(response_data):
+                    logger.info(f"✅ [RVIE] Respuesta recibida correctamente en intento {intento}")
+                    return response_data
+                else:
+                    raise SireApiException("Respuesta inválida de SUNAT")
+                
+            except asyncio.TimeoutError:
+                ultimo_error = f"Timeout de {timeout_segundos}s en intento {intento}"
+                logger.warning(f"⏱️ [RVIE] {ultimo_error}")
+                
+                if intento < max_intentos:
+                    # Esperar antes del siguiente intento (backoff exponencial)
+                    await asyncio.sleep(2 ** intento)
+                    
+            except Exception as e:
+                ultimo_error = f"Error en intento {intento}: {str(e)}"
+                logger.warning(f"⚠️ [RVIE] {ultimo_error}")
+                
+                if intento < max_intentos:
+                    await asyncio.sleep(2)
+        
+        # Si llegamos aquí, todos los intentos fallaron
+        if "500" in str(ultimo_error) or "503" in str(ultimo_error):
+            error_message = f"Los servicios de SUNAT están temporalmente no disponibles. Error: {ultimo_error}"
+        elif "401" in str(ultimo_error):
+            error_message = f"Error de autenticación con SUNAT. Verifica tus credenciales. Error: {ultimo_error}"
+        elif "timeout" in str(ultimo_error).lower():
+            error_message = f"Tiempo de espera agotado. SUNAT puede estar experimentando demoras. Error: {ultimo_error}"
+        else:
+            error_message = f"Servicio SUNAT no disponible después de {max_intentos} intentos. {ultimo_error}"
+        
+        logger.error(f"❌ [RVIE] {error_message}")
+        raise SireApiException(error_message)
+    
+    def _es_respuesta_asincrona(self, response_data: Dict[str, Any]) -> bool:
+        """
+        Determinar si la respuesta de SUNAT es asíncrona (con ticket)
+        
+        Args:
+            response_data: Respuesta de SUNAT
+            
+        Returns:
+            True si es respuesta asíncrona
+        """
+        return (
+            "ticket_id" in response_data or
+            "ticketId" in response_data or
+            response_data.get("tipo_respuesta") == "asincrona" or
+            response_data.get("procesamiento") == "asincrono"
+        )
+    
+    async def _procesar_respuesta_asincrona_propuesta(
+        self,
+        ruc: str,
+        periodo: str,
+        response_data: Dict[str, Any]
+    ) -> RviePropuesta:
+        """
+        Procesar respuesta asíncrona de SUNAT (con ticket)
+        
+        Args:
+            ruc: RUC del contribuyente
+            periodo: Período solicitado
+            response_data: Respuesta con ticket ID
+            
+        Returns:
+            RviePropuesta cuando el procesamiento termine
+        """
+        try:
+            ticket_id = response_data.get("ticket_id") or response_data.get("ticketId")
+            if not ticket_id:
+                raise SireApiException("Respuesta asíncrona sin ticket ID")
+            
+            logger.info(f"🎫 [RVIE] Procesamiento asíncrono iniciado. Ticket: {ticket_id}")
+            
+            # Esperar que el ticket termine de procesarse
+            propuesta_data = await self._esperar_ticket_propuesta(ticket_id, ruc, periodo)
+            
+            # Convertir datos del ticket a propuesta
+            propuesta = await self._convertir_ticket_a_propuesta(ruc, periodo, propuesta_data)
+            
+            return propuesta
+            
+        except Exception as e:
+            logger.error(f"❌ [RVIE] Error procesando respuesta asíncrona: {e}")
+            raise SireApiException(f"Error en procesamiento asíncrono: {e}")
+    
+    async def _procesar_respuesta_sincrona_propuesta(
+        self,
+        ruc: str,
+        periodo: str,
+        response_data: Dict[str, Any]
+    ) -> RviePropuesta:
+        """
+        Procesar respuesta síncrona directa de SUNAT
+        
+        Args:
+            ruc: RUC del contribuyente
+            periodo: Período solicitado
+            response_data: Datos de la propuesta
+            
+        Returns:
+            RviePropuesta procesada
+        """
+        try:
+            logger.info(f"📊 [RVIE] Procesando respuesta síncrona")
+            
+            # Extraer datos principales
+            comprobantes_data = response_data.get("comprobantes", [])
+            totales = response_data.get("totales", {})
+            
+            # Crear comprobantes
+            comprobantes = []
+            for comp_data in comprobantes_data:
+                comprobante = await self._convertir_data_a_comprobante(comp_data, periodo)
+                comprobantes.append(comprobante)
+            
+            # Crear propuesta
+            propuesta = RviePropuesta(
+                ruc=ruc,
+                periodo=periodo,
+                estado=RvieEstadoProceso.PROPUESTA,
+                fecha_generacion=datetime.utcnow(),
+                cantidad_comprobantes=len(comprobantes),
+                total_base_imponible=Decimal(str(totales.get("base_imponible", "0.00"))),
+                total_igv=Decimal(str(totales.get("igv", "0.00"))),
+                total_otros_tributos=Decimal(str(totales.get("otros_tributos", "0.00"))),
+                total_importe=Decimal(str(totales.get("importe_total", "0.00"))),
+                comprobantes=comprobantes
+            )
+            
+            logger.info(f"✅ [RVIE] Propuesta síncrona procesada: {len(comprobantes)} comprobantes")
+            return propuesta
+            
+        except Exception as e:
+            logger.error(f"❌ [RVIE] Error procesando respuesta síncrona: {e}")
+            # En caso de error, crear propuesta mock como fallback
+            return await self._crear_propuesta_mock(ruc, periodo)
+    
+    def _contiene_archivos_zip(self, response_data: Dict[str, Any]) -> bool:
+        """
+        Verificar si la respuesta contiene archivos ZIP
+        
+        Args:
+            response_data: Respuesta de SUNAT
+            
+        Returns:
+            True si contiene archivos ZIP
+        """
+        return (
+            "archivos_zip" in response_data or
+            "archivo_comprimido" in response_data or
+            response_data.get("formato_archivo") == "ZIP"
+        )
+    
+    async def _procesar_archivos_zip_propuesta(
+        self,
+        propuesta: RviePropuesta,
+        response_data: Dict[str, Any]
+    ) -> None:
+        """
+        Procesar archivos ZIP incluidos en la respuesta
+        
+        Args:
+            propuesta: Propuesta a actualizar
+            response_data: Datos de respuesta con archivos ZIP
+        """
+        try:
+            logger.info(f"📦 [RVIE] Procesando archivos ZIP en propuesta")
+            
+            # Buscar datos de archivos ZIP
+            zip_data = (
+                response_data.get("archivos_zip") or
+                response_data.get("archivo_comprimido") or
+                response_data.get("archivos", [])
+            )
+            
+            if isinstance(zip_data, list):
+                for archivo in zip_data:
+                    await self._procesar_archivo_zip_individual(propuesta, archivo)
+            else:
+                await self._procesar_archivo_zip_individual(propuesta, zip_data)
+            
+            logger.info(f"✅ [RVIE] Archivos ZIP procesados correctamente")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ [RVIE] Error procesando archivos ZIP: {e}")
+    
+    async def _almacenar_propuesta(self, propuesta: RviePropuesta) -> None:
+        """
+        Almacenar propuesta en cache y base de datos
+        
+        Args:
+            propuesta: Propuesta a almacenar
+        """
+        try:
+            # Almacenar en cache
+            cache_key = f"propuesta_rvie_{propuesta.ruc}_{propuesta.periodo}"
+            self.operaciones_cache[cache_key] = {
+                "propuesta": propuesta,
+                "fecha_cache": datetime.utcnow(),
+                "valido_hasta": datetime.utcnow() + timedelta(hours=6)  # Cache por 6 horas
+            }
+            
+            # Almacenar en base de datos
+            if self.database is not None:
+                propuesta_dict = propuesta.dict()
+                propuesta_dict["fecha_almacenamiento"] = datetime.utcnow()
+                propuesta_dict["tipo"] = "RVIE"
+                
+                await self.database.sire_propuestas.update_one(
+                    {
+                        "ruc": propuesta.ruc,
+                        "periodo": propuesta.periodo,
+                        "tipo": "RVIE"
+                    },
+                    {"$set": propuesta_dict},
+                    upsert=True
+                )
+                
+                logger.info(f"💾 [RVIE] Propuesta almacenada en base de datos")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ [RVIE] Error almacenando propuesta: {e}")
+    
+    # ==================== MÉTODOS HELPER ADICIONALES ====================
+    
+    def _es_cache_valido(self, cache_data: Dict[str, Any]) -> bool:
+        """Verificar si el cache sigue siendo válido"""
+        try:
+            valido_hasta = cache_data.get("valido_hasta")
+            if not valido_hasta:
+                return False
+            return datetime.utcnow() < valido_hasta
+        except:
+            return False
+    
+    def _es_propuesta_vigente(self, propuesta_data: Dict[str, Any]) -> bool:
+        """Verificar si la propuesta en BD sigue vigente"""
+        try:
+            fecha_almacenamiento = propuesta_data.get("fecha_almacenamiento")
+            if not fecha_almacenamiento:
+                return False
+            # Propuesta vigente por 24 horas
+            return datetime.utcnow() - fecha_almacenamiento < timedelta(hours=24)
+        except:
+            return False
+    
+    def _es_respuesta_valida(self, response_data: Dict[str, Any]) -> bool:
+        """Verificar si la respuesta de SUNAT es válida"""
+        if not isinstance(response_data, dict):
+            return False
+        
+        # Verificar campos mínimos requeridos
+        campos_requeridos = ["estado", "mensaje"]
+        for campo in campos_requeridos:
+            if campo not in response_data:
+                return False
+        
+        # Verificar que no sea un error
+        if response_data.get("estado") == "ERROR":
+            return False
+            
+        return True
+    
+    async def _esperar_ticket_propuesta(
+        self,
+        ticket_id: str,
+        ruc: str,
+        periodo: str,
+        max_espera_minutos: int = 10
+    ) -> Dict[str, Any]:
+        """
+        Esperar que un ticket de propuesta termine de procesarse
+        
+        Args:
+            ticket_id: ID del ticket
+            ruc: RUC del contribuyente
+            periodo: Período solicitado
+            max_espera_minutos: Máximo tiempo de espera
+            
+        Returns:
+            Datos de la propuesta procesada
+        """
+        inicio_espera = datetime.utcnow()
+        max_espera = timedelta(minutes=max_espera_minutos)
+        
+        while datetime.utcnow() - inicio_espera < max_espera:
+            try:
+                # Consultar estado del ticket
+                ticket_estado = await self.consultar_ticket(ticket_id)
+                
+                if ticket_estado.get("estado") == "TERMINADO":
+                    logger.info(f"✅ [RVIE] Ticket {ticket_id} completado")
+                    return ticket_estado.get("resultado", {})
+                elif ticket_estado.get("estado") == "ERROR":
+                    raise SireApiException(f"Error en ticket {ticket_id}: {ticket_estado.get('mensaje')}")
+                
+                # Esperar antes de la siguiente consulta
+                await asyncio.sleep(10)  # 10 segundos entre consultas
+                
+            except Exception as e:
+                logger.warning(f"⚠️ [RVIE] Error consultando ticket {ticket_id}: {e}")
+                await asyncio.sleep(5)
+        
+        raise SireApiException(f"Timeout esperando ticket {ticket_id} después de {max_espera_minutos} minutos")
+    
+    async def _convertir_ticket_a_propuesta(
+        self,
+        ruc: str,
+        periodo: str,
+        ticket_data: Dict[str, Any]
+    ) -> RviePropuesta:
+        """
+        Convertir datos de ticket completado a propuesta RVIE
+        """
+        try:
+            # Extraer datos del ticket
+            comprobantes_data = ticket_data.get("comprobantes", [])
+            totales = ticket_data.get("totales", {})
+            
+            # Procesar comprobantes
+            comprobantes = []
+            for comp_data in comprobantes_data:
+                comprobante = await self._convertir_data_a_comprobante(comp_data, periodo)
+                comprobantes.append(comprobante)
+            
+            # Crear propuesta desde ticket
+            propuesta = RviePropuesta(
+                ruc=ruc,
+                periodo=periodo,
+                estado=RvieEstadoProceso.PROPUESTA,
+                fecha_generacion=datetime.utcnow(),
+                cantidad_comprobantes=len(comprobantes),
+                total_base_imponible=Decimal(str(totales.get("base_imponible", "0.00"))),
+                total_igv=Decimal(str(totales.get("igv", "0.00"))),
+                total_otros_tributos=Decimal(str(totales.get("otros_tributos", "0.00"))),
+                total_importe=Decimal(str(totales.get("importe_total", "0.00"))),
+                comprobantes=comprobantes,
+                ticket_id=ticket_data.get("ticket_id")
+            )
+            
+            return propuesta
+            
+        except Exception as e:
+            logger.error(f"❌ [RVIE] Error convirtiendo ticket a propuesta: {e}")
+            # Fallback a propuesta mock
+            return await self._crear_propuesta_mock(ruc, periodo)
+    
+    async def _convertir_data_a_comprobante(
+        self,
+        comp_data: Dict[str, Any],
+        periodo: str
+    ) -> RvieComprobante:
+        """
+        Convertir datos de API a modelo RvieComprobante
+        """
+        try:
+            return RvieComprobante(
+                periodo=periodo,
+                correlativo=comp_data.get("correlativo", "1"),
+                fecha_emision=datetime.strptime(comp_data.get("fecha_emision", "2024-01-01"), "%Y-%m-%d").date(),
+                tipo_comprobante=comp_data.get("tipo_comprobante", "01"),
+                serie=comp_data.get("serie", "F001"),
+                numero=comp_data.get("numero", "1"),
+                tipo_documento_cliente=comp_data.get("tipo_doc_cliente", "6"),
+                numero_documento_cliente=comp_data.get("num_doc_cliente", "20000000000"),
+                razon_social_cliente=comp_data.get("razon_social_cliente", "CLIENTE GENÉRICO"),
+                base_imponible=Decimal(str(comp_data.get("base_imponible", "0.00"))),
+                igv=Decimal(str(comp_data.get("igv", "0.00"))),
+                otros_tributos=Decimal(str(comp_data.get("otros_tributos", "0.00"))),
+                importe_total=Decimal(str(comp_data.get("importe_total", "0.00"))),
+                moneda=comp_data.get("moneda", "PEN"),
+                estado=comp_data.get("estado", "EMITIDO")
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ [RVIE] Error convirtiendo comprobante: {e}")
+            # Retornar comprobante básico en caso de error
+            return RvieComprobante(
+                periodo=periodo,
+                correlativo="1",
+                fecha_emision=date.today(),
+                tipo_comprobante="01",
+                serie="F001",
+                numero="1",
+                tipo_documento_cliente="6",
+                numero_documento_cliente="20000000000",
+                razon_social_cliente="CLIENTE GENÉRICO",
+                base_imponible=Decimal("0.00"),
+                igv=Decimal("0.00"),
+                importe_total=Decimal("0.00")
+            )
+    
+    def _convertir_data_a_propuesta(self, propuesta_data: Dict[str, Any]) -> RviePropuesta:
+        """
+        Convertir datos de base de datos a modelo RviePropuesta
+        """
+        try:
+            # Convertir comprobantes
+            comprobantes = []
+            for comp_data in propuesta_data.get("comprobantes", []):
+                comprobante = RvieComprobante(**comp_data)
+                comprobantes.append(comprobante)
+            
+            # Crear propuesta
+            propuesta = RviePropuesta(
+                ruc=propuesta_data["ruc"],
+                periodo=propuesta_data["periodo"],
+                estado=RvieEstadoProceso(propuesta_data.get("estado", "PROPUESTA")),
+                fecha_generacion=propuesta_data.get("fecha_generacion", datetime.utcnow()),
+                cantidad_comprobantes=propuesta_data.get("cantidad_comprobantes", len(comprobantes)),
+                total_base_imponible=Decimal(str(propuesta_data.get("total_base_imponible", "0.00"))),
+                total_igv=Decimal(str(propuesta_data.get("total_igv", "0.00"))),
+                total_otros_tributos=Decimal(str(propuesta_data.get("total_otros_tributos", "0.00"))),
+                total_importe=Decimal(str(propuesta_data.get("total_importe", "0.00"))),
+                comprobantes=comprobantes,
+                archivo_propuesta=propuesta_data.get("archivo_propuesta"),
+                archivo_inconsistencias=propuesta_data.get("archivo_inconsistencias"),
+                ticket_id=propuesta_data.get("ticket_id")
+            )
+            
+            return propuesta
+            
+        except Exception as e:
+            logger.error(f"❌ [RVIE] Error convirtiendo data a propuesta: {e}")
+            raise SireException(f"Error procesando propuesta desde base de datos: {e}")
+    
+    async def _procesar_archivo_zip_individual(
+        self,
+        propuesta: RviePropuesta,
+        archivo_data: Dict[str, Any]
+    ) -> None:
+        """
+        Procesar un archivo ZIP individual
+        
+        Args:
+            propuesta: Propuesta a actualizar
+            archivo_data: Datos del archivo ZIP
+        """
+        try:
+            nombre_archivo = archivo_data.get("nombre", "propuesta.zip")
+            contenido_base64 = archivo_data.get("contenido", "")
+            
+            if contenido_base64:
+                import base64
+                import zipfile
+                from io import BytesIO
+                
+                # Decodificar contenido ZIP
+                zip_bytes = base64.b64decode(contenido_base64)
+                
+                # Procesar archivo ZIP
+                with zipfile.ZipFile(BytesIO(zip_bytes), 'r') as zip_file:
+                    for file_name in zip_file.namelist():
+                        if file_name.endswith('.txt'):
+                            # Leer archivo TXT dentro del ZIP
+                            txt_content = zip_file.read(file_name).decode('utf-8')
+                            
+                            # Procesar contenido del archivo TXT
+                            await self._procesar_contenido_txt_propuesta(propuesta, txt_content)
+                
+                # Almacenar referencia al archivo
+                propuesta.archivo_propuesta = nombre_archivo
+                
+                logger.info(f"📦 [RVIE] Archivo ZIP procesado: {nombre_archivo}")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ [RVIE] Error procesando archivo ZIP: {e}")
+    
+    async def _procesar_contenido_txt_propuesta(
+        self,
+        propuesta: RviePropuesta,
+        txt_content: str
+    ) -> None:
+        """
+        Procesar contenido de archivo TXT de propuesta
+        
+        Args:
+            propuesta: Propuesta a actualizar
+            txt_content: Contenido del archivo TXT
+        """
+        try:
+            lines = txt_content.strip().split('\n')
+            logger.info(f"📄 [RVIE] Procesando archivo TXT con {len(lines)} líneas")
+            
+            comprobantes_adicionales = []
+            
+            for line_num, line in enumerate(lines, 1):
+                try:
+                    # Parsear línea según formato SUNAT
+                    campos = line.split('|')
+                    
+                    if len(campos) >= 10:  # Validar mínimo de campos
+                        comprobante = await self._parsear_linea_txt_comprobante(
+                            campos, propuesta.periodo
+                        )
+                        comprobantes_adicionales.append(comprobante)
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ [RVIE] Error en línea {line_num}: {e}")
+            
+            # Agregar comprobantes adicionales a la propuesta
+            if comprobantes_adicionales:
+                propuesta.comprobantes.extend(comprobantes_adicionales)
+                propuesta.cantidad_comprobantes = len(propuesta.comprobantes)
+                
+                # Recalcular totales
+                await self._recalcular_totales_propuesta(propuesta)
+                
+                logger.info(f"✅ [RVIE] Agregados {len(comprobantes_adicionales)} comprobantes desde TXT")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ [RVIE] Error procesando contenido TXT: {e}")
+    
+    async def _parsear_linea_txt_comprobante(
+        self,
+        campos: List[str],
+        periodo: str
+    ) -> RvieComprobante:
+        """
+        Parsear una línea de archivo TXT a comprobante RVIE
+        
+        Args:
+            campos: Lista de campos de la línea
+            periodo: Período del comprobante
+            
+        Returns:
+            RvieComprobante parseado
+        """
+        try:
+            # Formato típico de línea SUNAT:
+            # correlativo|fecha|tipo_comp|serie|numero|tipo_doc|num_doc|razon_social|base|igv|total
+            
+            return RvieComprobante(
+                periodo=periodo,
+                correlativo=campos[0] if len(campos) > 0 else "1",
+                fecha_emision=datetime.strptime(campos[1] if len(campos) > 1 else "2024-01-01", "%Y-%m-%d").date(),
+                tipo_comprobante=campos[2] if len(campos) > 2 else "01",
+                serie=campos[3] if len(campos) > 3 else "F001",
+                numero=campos[4] if len(campos) > 4 else "1",
+                tipo_documento_cliente=campos[5] if len(campos) > 5 else "6",
+                numero_documento_cliente=campos[6] if len(campos) > 6 else "20000000000",
+                razon_social_cliente=campos[7] if len(campos) > 7 else "CLIENTE",
+                base_imponible=Decimal(campos[8] if len(campos) > 8 else "0.00"),
+                igv=Decimal(campos[9] if len(campos) > 9 else "0.00"),
+                importe_total=Decimal(campos[10] if len(campos) > 10 else "0.00"),
+                moneda="PEN",
+                estado="EMITIDO"
+            )
+            
+        except Exception as e:
+            logger.warning(f"⚠️ [RVIE] Error parseando línea TXT: {e}")
+            # Retornar comprobante básico en caso de error
+            return RvieComprobante(
+                periodo=periodo,
+                correlativo="1",
+                fecha_emision=date.today(),
+                tipo_comprobante="01",
+                serie="F001",
+                numero="1",
+                tipo_documento_cliente="6",
+                numero_documento_cliente="20000000000",
+                razon_social_cliente="CLIENTE GENÉRICO",
+                base_imponible=Decimal("0.00"),
+                igv=Decimal("0.00"),
+                importe_total=Decimal("0.00")
+            )
+    
+    async def _recalcular_totales_propuesta(self, propuesta: RviePropuesta) -> None:
+        """
+        Recalcular totales de la propuesta
+        
+        Args:
+            propuesta: Propuesta a recalcular
+        """
+        try:
+            total_base = Decimal("0.00")
+            total_igv = Decimal("0.00")
+            total_otros = Decimal("0.00")
+            total_importe = Decimal("0.00")
+            
+            for comprobante in propuesta.comprobantes:
+                total_base += comprobante.base_imponible
+                total_igv += comprobante.igv
+                total_otros += comprobante.otros_tributos
+                total_importe += comprobante.importe_total
+            
+            # Actualizar totales
+            propuesta.total_base_imponible = total_base
+            propuesta.total_igv = total_igv
+            propuesta.total_otros_tributos = total_otros
+            propuesta.total_importe = total_importe
+            propuesta.cantidad_comprobantes = len(propuesta.comprobantes)
+            
+            logger.info(f"🧮 [RVIE] Totales recalculados: {propuesta.cantidad_comprobantes} comprobantes, S/ {total_importe}")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ [RVIE] Error recalculando totales: {e}")

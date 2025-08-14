@@ -28,48 +28,28 @@ logger = logging.getLogger(__name__)
 # ==================== DEPENDENCIAS ====================
 
 async def get_ticket_service(db: AsyncIOMotorDatabase = Depends(get_database)) -> SireTicketService:
-    """Obtener servicio de tickets con dependencias"""
-    try:
-        # Repositorio de tickets
-        ticket_collection = db.sire_tickets
-        ticket_repo = SireTicketRepository(ticket_collection)
-        
-        # Token manager
-        token_collection = db.sire_sessions
-        token_manager = SireTokenManager(mongodb_collection=token_collection)
-        
-        # Servicio RVIE (importar aquí para evitar circular import)
-        from ..services.rvie_service import RvieService
-        rvie_service = RvieService(token_manager)
-        
-        # Crear servicio de tickets
-        return SireTicketService(
-            ticket_repository=ticket_repo,
-            rvie_service=rvie_service,
-            token_manager=token_manager
-        )
-        
-    except Exception as e:
-        logger.error(f"Error creando servicio de tickets: {e}")
-        # Fallback: crear sin dependencias para evitar 500
-        from ..services.rvie_service import RvieService
-        
-        token_manager = SireTokenManager()  # In-memory
-        rvie_service = RvieService(token_manager)
-        
-        # Mock repository
-        class MockTicketRepository:
-            async def create_ticket(self, ticket): return ticket.ticket_id
-            async def get_ticket(self, ticket_id): return None
-            async def update_ticket_status(self, *args): return True
-            async def get_tickets_by_ruc(self, *args): return []
-            async def get_ticket_stats(self, ruc=None): return {"total": 0, "by_status": {}}
-        
-        return SireTicketService(
-            ticket_repository=MockTicketRepository(),
-            rvie_service=rvie_service,
-            token_manager=token_manager
-        )
+    """Obtener servicio de tickets con dependencias - SIN FALLBACK MOCK"""
+    # Repositorio de tickets
+    ticket_collection = db.sire_tickets
+    ticket_repo = SireTicketRepository(ticket_collection)
+    
+    # Token manager
+    token_collection = db.sire_sessions
+    token_manager = SireTokenManager(mongodb_collection=token_collection)
+    
+    # Servicio RVIE (importar aquí para evitar circular import)
+    from ..services.rvie_service import RvieService
+    from ..services.api_client import SunatApiClient
+    
+    api_client = SunatApiClient()
+    rvie_service = RvieService(api_client, token_manager)
+    
+    # Crear servicio de tickets
+    return SireTicketService(
+        ticket_repository=ticket_repo,
+        rvie_service=rvie_service,
+        token_manager=token_manager
+    )
 
 
 # ==================== ENDPOINTS DE TICKETS ====================
