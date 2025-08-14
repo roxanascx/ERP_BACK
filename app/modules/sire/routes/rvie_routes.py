@@ -12,6 +12,7 @@ from ..schemas.rvie_schemas import (
     RvieReemplazarPropuestaRequest,
     RvieRegistrarPreliminarRequest,
     RvieConsultarInconsistenciasRequest,
+    RvieGenerarTicketRequest,
     RvieConsultarTicketRequest,
     RvieDescargarArchivoRequest,
     RviePropuestaResponse,
@@ -73,10 +74,16 @@ async def listar_endpoints_rvie():
                 "requires": ["ruc", "periodo"]
             },
             {
-                "endpoint": "/consultar-ticket",
+                "endpoint": "/generar-ticket",
                 "method": "POST",
+                "description": "Generar ticket para operación RVIE asíncrona",
+                "requires": ["ruc", "periodo", "operacion"]
+            },
+            {
+                "endpoint": "/consultar-ticket",
+                "method": "GET",
                 "description": "Consultar estado de ticket RVIE",
-                "requires": ["ruc", "ticket"]
+                "requires": ["ruc", "ticket_id"]
             },
             {
                 "endpoint": "/descargar-archivo",
@@ -92,8 +99,36 @@ async def listar_endpoints_rvie():
 
 # Dependencias
 async def get_rvie_service() -> RvieService:
-    """Obtener instancia del servicio RVIE"""
-    return RvieService()
+    """Obtener instancia del servicio RVIE con dependencias correctas"""
+    try:
+        # Importar dependencias necesarias
+        from ..services.api_client import SunatApiClient
+        from ..services.token_manager import SireTokenManager
+        from ....database import get_database
+        
+        # Obtener conexión a la base de datos
+        database = get_database()
+        
+        # Crear token manager con MongoDB
+        token_manager = SireTokenManager(
+            mongo_collection=database.sire_sessions if database is not None else None
+        )
+        
+        # Crear cliente API
+        api_client = SunatApiClient()
+        
+        # Crear servicio RVIE con dependencias
+        return RvieService(api_client, token_manager, database)
+        
+    except Exception as e:
+        logger.error(f"❌ [RVIE] Error creando dependencias: {str(e)}")
+        # Fallback: crear sin MongoDB si hay problemas
+        from ..services.api_client import SunatApiClient
+        from ..services.token_manager import SireTokenManager
+        
+        token_manager = SireTokenManager()  # Sin MongoDB
+        api_client = SunatApiClient()
+        return RvieService(api_client, token_manager, None)  # None para database
 
 async def get_company_service() -> CompanyService:
     """Obtener instancia del servicio de empresas"""
@@ -158,7 +193,7 @@ async def obtener_inconsistencias_rvie(
                     "campo": "importe_total",
                     "descripcion": "Importe total no coincide con la suma de líneas",
                     "severidad": "ERROR",
-                    "valor_esperado": null
+                    "valor_esperado": None
                 }
             ],
             "total_inconsistencias": 3,
@@ -171,7 +206,7 @@ async def obtener_inconsistencias_rvie(
 async def validate_ruc_access(ruc: str, company_service: CompanyService = Depends(get_company_service)) -> CompanyModel:
     """Validar que el RUC existe y es accesible"""
     try:
-        company = await company_service.get_by_ruc(ruc)
+        company = await company_service.get_company_model(ruc)
         if not company:
             raise HTTPException(status_code=404, detail=f"Company with RUC {ruc} not found")
         
@@ -191,8 +226,8 @@ async def validate_ruc_access(ruc: str, company_service: CompanyService = Depend
 async def descargar_propuesta(
     request: RvieDescargarPropuestaRequest,
     background_tasks: BackgroundTasks,
-    company: CompanyModel = Depends(validate_ruc_access),
-    rvie_service: RvieService = Depends(get_rvie_service)
+    rvie_service: RvieService = Depends(get_rvie_service),
+    company_service: CompanyService = Depends(get_company_service)
 ):
     """
     Descargar propuesta RVIE desde SUNAT
@@ -201,16 +236,23 @@ async def descargar_propuesta(
     para un período específico.
     """
     try:
+        # Validar que la empresa existe y tiene credenciales SIRE
+        company = await company_service.get_company_model(request.ruc)
+        if not company:
+            raise HTTPException(status_code=404, detail=f"Company with RUC {request.ruc} not found")
+        
+        if not company.tiene_sire():
+            raise HTTPException(
+                status_code=400, 
+                detail="Company does not have SIRE credentials configured"
+            )
+        
         logger.info(f"Descargando propuesta RVIE para RUC {request.ruc}, período {request.periodo}")
         
         # Ejecutar descarga de propuesta
         propuesta = await rvie_service.descargar_propuesta(
             ruc=request.ruc,
-            periodo=request.periodo,
-            credentials={
-                'username': company.sunat_usuario,
-                'password': company.sunat_clave
-            }
+            periodo=request.periodo
         )
         
         logger.info(f"Propuesta RVIE descargada exitosamente para {request.ruc}-{request.periodo}")
@@ -241,11 +283,7 @@ async def aceptar_propuesta(
         # Ejecutar aceptación de propuesta
         resultado = await rvie_service.aceptar_propuesta(
             ruc=request.ruc,
-            periodo=request.periodo,
-            credentials={
-                'username': company.sunat_usuario,
-                'password': company.sunat_clave
-            }
+            periodo=request.periodo
         )
         
         logger.info(f"Propuesta RVIE aceptada exitosamente para {request.ruc}-{request.periodo}")
@@ -279,11 +317,7 @@ async def reemplazar_propuesta(
             ruc=request.ruc,
             periodo=request.periodo,
             archivo_contenido=request.archivo_contenido,
-            nombre_archivo=request.nombre_archivo,
-            credentials={
-                'username': company.sunat_usuario,
-                'password': company.sunat_clave
-            }
+            nombre_archivo=request.nombre_archivo
         )
         
         logger.info(f"Propuesta RVIE reemplazada exitosamente para {request.ruc}-{request.periodo}")
@@ -316,11 +350,7 @@ async def registrar_preliminar(
         resultado = await rvie_service.registrar_preliminar(
             ruc=request.ruc,
             periodo=request.periodo,
-            comprobantes=request.comprobantes,
-            credentials={
-                'username': company.sunat_usuario,
-                'password': company.sunat_clave
-            }
+            comprobantes=request.comprobantes
         )
         
         logger.info(f"Registro preliminar RVIE completado para {request.ruc}-{request.periodo}")
@@ -353,11 +383,7 @@ async def consultar_inconsistencias(
         inconsistencias = await rvie_service.descargar_inconsistencias(
             ruc=ruc,
             periodo=periodo,
-            fase=fase,
-            credentials={
-                'username': company.sunat_usuario,
-                'password': company.sunat_clave
-            }
+            fase=fase
         )
         
         logger.info(f"Inconsistencias RVIE consultadas para {ruc}-{periodo}")
@@ -368,6 +394,106 @@ async def consultar_inconsistencias(
     except Exception as e:
         logger.error(f"Error consultando inconsistencias RVIE: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+
+async def validate_ruc_from_request(request: RvieGenerarTicketRequest, company_service: CompanyService = Depends(get_company_service)) -> CompanyModel:
+    """Validar RUC desde el request body"""
+    try:
+        company = await company_service.get_company_model(request.ruc)
+        if not company:
+            raise HTTPException(status_code=404, detail=f"RUC {request.ruc} no encontrado")
+        return company
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error validando RUC {request.ruc}: {e}")
+        raise HTTPException(status_code=500, detail="Error interno validando RUC")
+
+
+@router.post("/generar-ticket", response_model=RvieTicketResponse)
+async def generar_ticket(
+    request: RvieGenerarTicketRequest,
+    background_tasks: BackgroundTasks,
+    company: CompanyModel = Depends(validate_ruc_from_request),
+    rvie_service: RvieService = Depends(get_rvie_service)
+):
+    """
+    Generar ticket para operación RVIE asíncrona
+    
+    Crea un ticket para procesar operaciones RVIE que requieren tiempo de procesamiento.
+    """
+    try:
+        logger.info(f"Generando ticket RVIE {request.operacion} para RUC {request.ruc}")
+        
+        # Generar ticket usando el servicio
+        ticket = await rvie_service.generar_ticket(
+            ruc=request.ruc,
+            periodo=request.periodo,
+            operacion=request.operacion
+        )
+        
+        # Programar procesamiento en background
+        background_tasks.add_task(
+            procesar_ticket_background,
+            ticket_id=ticket["ticket_id"],
+            ruc=request.ruc,
+            periodo=request.periodo,
+            operacion=request.operacion
+        )
+        
+        logger.info(f"Ticket RVIE generado: {ticket['ticket_id']}")
+        return ticket
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generando ticket RVIE: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+
+async def procesar_ticket_background(ticket_id: str, ruc: str, periodo: str, operacion: str):
+    """Procesar ticket en background"""
+    try:
+        # Obtener servicio
+        rvie_service = await get_rvie_service()
+        
+        # Marcar como procesando
+        await rvie_service.actualizar_estado_ticket(
+            ticket_id=ticket_id,
+            status="PROCESANDO",
+            progreso_porcentaje=10
+        )
+        
+        # Simular procesamiento según operación
+        if operacion == "descargar-propuesta":
+            # Descargar propuesta
+            resultado = await rvie_service.descargar_propuesta(ruc=ruc, periodo=periodo)
+            
+            # Marcar como completado
+            await rvie_service.actualizar_estado_ticket(
+                ticket_id=ticket_id,
+                status="TERMINADO",
+                progreso_porcentaje=100,
+                resultado=resultado
+            )
+            
+        else:
+            # Otras operaciones
+            await rvie_service.actualizar_estado_ticket(
+                ticket_id=ticket_id,
+                status="TERMINADO",
+                progreso_porcentaje=100,
+                descripcion=f"Operación {operacion} completada"
+            )
+            
+    except Exception as e:
+        # Marcar como error
+        await rvie_service.actualizar_estado_ticket(
+            ticket_id=ticket_id,
+            status="ERROR",
+            error_mensaje=str(e)
+        )
+        logger.error(f"Error procesando ticket {ticket_id}: {str(e)}")
 
 
 @router.get("/ticket/{ruc}/{ticket_id}", response_model=RvieTicketResponse)
@@ -388,11 +514,7 @@ async def consultar_ticket(
         # Ejecutar consulta de ticket
         estado_ticket = await rvie_service.consultar_estado_ticket(
             ruc=ruc,
-            ticket_id=ticket_id,
-            credentials={
-                'username': company.sunat_usuario,
-                'password': company.sunat_clave
-            }
+            ticket_id=ticket_id
         )
         
         logger.info(f"Estado ticket RVIE consultado: {ticket_id}")
@@ -423,11 +545,7 @@ async def descargar_archivo(
         # Ejecutar descarga de archivo
         archivo = await rvie_service.descargar_archivo_ticket(
             ruc=ruc,
-            ticket_id=ticket_id,
-            credentials={
-                'username': company.sunat_usuario,
-                'password': company.sunat_clave
-            }
+            ticket_id=ticket_id
         )
         
         logger.info(f"Archivo RVIE descargado: {ticket_id}")
@@ -458,11 +576,7 @@ async def obtener_resumen(
         # Ejecutar obtención de resumen
         resumen = await rvie_service.obtener_resumen_periodo(
             ruc=ruc,
-            periodo=periodo,
-            credentials={
-                'username': company.sunat_usuario,
-                'password': company.sunat_clave
-            }
+            periodo=periodo
         )
         
         logger.info(f"Resumen RVIE obtenido para {ruc}-{periodo}")

@@ -136,6 +136,32 @@ class RvieConsultarInconsistenciasRequest(BaseModel):
         return v
 
 
+class RvieGenerarTicketRequest(BaseModel):
+    """Request para generar ticket RVIE"""
+    ruc: str = Field(..., description="RUC del contribuyente", min_length=11, max_length=11)
+    periodo: str = Field(..., description="Periodo YYYYMM", min_length=6, max_length=6)
+    operacion: str = Field(..., description="Tipo de operación", pattern="^(descargar-propuesta|aceptar-propuesta|reemplazar-propuesta)$")
+    
+    @validator('ruc')
+    def validate_ruc(cls, v):
+        if not v.isdigit():
+            raise ValueError('RUC debe contener solo dígitos')
+        return v
+    
+    @validator('periodo')
+    def validate_periodo(cls, v):
+        if not v.isdigit():
+            raise ValueError('Periodo debe contener solo dígitos')
+        try:
+            year = int(v[:4])
+            month = int(v[4:])
+            if year < 2000 or year > 2030 or month < 1 or month > 12:
+                raise ValueError('Periodo fuera de rango válido')
+        except:
+            raise ValueError('Formato de periodo inválido')
+        return v
+
+
 class RvieConsultarTicketRequest(BaseModel):
     """Request para consultar estado de ticket RVIE"""
     ruc: str = Field(..., description="RUC del contribuyente", min_length=11, max_length=11)

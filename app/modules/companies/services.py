@@ -58,6 +58,10 @@ class CompanyService:
             return self._company_to_detail_response(company)
         return None
     
+    async def get_company_model(self, ruc: str) -> Optional[CompanyModel]:
+        """Obtener modelo de empresa por RUC (sin transformar a response)"""
+        return await self.repository.get_company_by_ruc(ruc)
+    
     async def update_company(self, ruc: str, update_data: CompanyUpdate) -> Optional[CompanyResponse]:
         """Actualizar empresa existente"""
         # Filtrar campos None

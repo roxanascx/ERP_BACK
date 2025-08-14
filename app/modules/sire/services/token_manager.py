@@ -127,6 +127,44 @@ class SireTokenManager:
         except Exception as e:
             logger.error(f"❌ [TOKEN] Error obteniendo token válido para RUC {ruc}: {e}")
             return None
+
+    async def get_active_session_token(self, ruc: str) -> Optional[str]:
+        """
+        Obtener token de sesión activa SIN intentar renovación
+        
+        Este método es más rápido y seguro para operaciones que necesitan
+        usar una sesión ya autenticada sin riesgo de colgarse en renovación.
+        
+        Args:
+            ruc: RUC del contribuyente
+        
+        Returns:
+            str: Token de sesión activa o None si no existe
+        """
+        try:
+            logger.debug(f"🔍 [TOKEN] Obteniendo sesión activa para RUC {ruc} (sin renovación)")
+            
+            # Buscar sesión activa
+            session = await self._find_active_session(ruc)
+            if not session:
+                logger.warning(f"⚠️ [TOKEN] No se encontró sesión activa para RUC {ruc}")
+                return None
+            
+            # Verificar que no esté expirada (sin renovar)
+            if session.expires_at <= datetime.utcnow():
+                logger.warning(f"⚠️ [TOKEN] Sesión expirada para RUC {ruc}")
+                return None
+                
+            # Actualizar último uso
+            session.last_used = datetime.utcnow()
+            await self._update_session_usage(session)
+            
+            logger.debug(f"✅ [TOKEN] Token activo obtenido para RUC {ruc}")
+            return session.access_token
+            
+        except Exception as e:
+            logger.error(f"❌ [TOKEN] Error obteniendo sesión activa para RUC {ruc}: {e}")
+            return None
     
     async def revoke_token(self, ruc: str) -> bool:
         """
