@@ -138,22 +138,30 @@ class RvieService:
                     "No hay sesión activa para SUNAT. Por favor, autentifíquese primero."
                 )
             
-            # 4. PREPARAR PARÁMETROS SEGÚN ESPECIFICACIÓN SUNAT
-            params = {
-                "ruc": ruc,
-                "periodo": periodo,
-                "operacion": "descargar_propuesta",
-                "incluir_detalle": "S" if incluir_detalle else "N",
-                "formato_respuesta": "JSON",
-                "timestamp": inicio_proceso.isoformat()
+            # 4. PREPARAR PARÁMETROS QUERY SEGÚN ESPECIFICACIÓN SUNAT OFICIAL
+            # Según manual: parámetros van en query string, no en body
+            query_params = {
+                "codTipoArchivo": 0,  # 0: txt, 1: csv (obligatorio)
+                "codOrigenEnvio": "2",  # 2: Servicio API (obligatorio según manual)
             }
+            
+            # Agregar parámetros opcionales solo si se especifican
+            if incluir_detalle:
+                # Para RVIE, incluir detalle podría afectar otros parámetros
+                pass
+            
+            # Limpiar parámetros nulos antes de enviar
+            clean_params = {k: v for k, v in query_params.items() if v is not None}
             
             
             # 5. REALIZAR PETICIÓN CON RETRY Y MANEJO DE RESPUESTAS MASIVAS
+            # Usar el endpoint correcto del api_client
+            endpoint_url = self.api_client.endpoints["rvie_descargar_propuesta"].format(periodo=periodo)
+            
             response_data = await self._realizar_peticion_con_retry(
-                endpoint=self.rvie_endpoints["propuesta"],
+                endpoint=endpoint_url,
                 token=token,
-                params=params,
+                params=clean_params,  # Usar parámetros limpios
                 max_intentos=3,
                 timeout_segundos=60
             )

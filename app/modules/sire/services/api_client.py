@@ -26,33 +26,34 @@ class SunatApiClient:
             base_url: URL base de la API SUNAT (usar prod o testing)
             timeout: Timeout para requests en segundos
         """
-        # URLs de SUNAT según Manual v25 (cambiar según entorno)
+        # URLs de SUNAT según Manual v25 (corregidas según documentación oficial)
         # Producción: https://api-sire.sunat.gob.pe/v1
-        # Testing: https://api-sire-qa.sunat.gob.pe/v1
         self.base_url = base_url or "https://api-sire.sunat.gob.pe/v1"
         self.auth_url = "https://api-seguridad.sunat.gob.pe/v1/clientessol"
         
-        # Endpoints específicos según manual SUNAT
+        # Endpoints específicos según manual SUNAT OFICIAL v25
         self.endpoints = {
             # Autenticación
             "auth_token": "/clientessol/{client_id}/oauth2/token",
             
-            # RVIE - Registro de Ventas e Ingresos Electrónico
-            "rvie_descargar_propuesta": "/sire/rvie/propuesta/descargar",
-            "rvie_aceptar_propuesta": "/sire/rvie/propuesta/aceptar", 
-            "rvie_reemplazar_propuesta": "/sire/rvie/propuesta/reemplazar",
-            "rvie_registrar_preliminar": "/sire/rvie/preliminar/registrar",
-            "rvie_inconsistencias": "/sire/rvie/inconsistencias/descargar",
+            # RVIE - Registro de Ventas e Ingresos Electrónico (URLs OFICIALES según Manual v25)
+            "rvie_descargar_propuesta": "/contribuyente/migeigv/libros/rvie/propuesta/web/propuesta/{periodo}/exportapropuesta",  # URL CORRECTA línea 2893
+            "rvie_aceptar_propuesta": "/contribuyente/migeigv/libros/rvie/propuesta/web/aceptarpropuesta",
+            "rvie_reemplazar_propuesta": "/contribuyente/migeigv/libros/rvie/propuesta/web/reemplazarpropuesta", 
+            "rvie_registrar_preliminar": "/contribuyente/migeigv/libros/rvie/preliminar/web/preliminarregistrado",
+            "rvie_inconsistencias": "/contribuyente/migeigv/libros/rvie/inconsistencias/web/inconsistenciascomprobantes",
+            "rvie_resumen": "/contribuyente/migeigv/libros/rvie/resumen/web/resumencomprobantes/{periodo}/{codTipoResumen}/{codTipoArchivo}",
             
-            # Gestión de Tickets
-            "consultar_ticket": "/sire/ticket/{ticket_id}/estado",
-            "descargar_archivo": "/sire/archivo/{ticket_id}/descargar",
+            # Gestión de Tickets (URLs OFICIALES según Manual v25)
+            "consultar_ticket": "/contribuyente/migeigv/ticket/{ticket_id}/estado",
+            "descargar_archivo": "/contribuyente/migeigv/ticket/{ticket_id}/archivo/{nombre_archivo}",
             
-            # RCE - Registro de Compras Electrónico
-            "rce_descargar_propuesta": "/sire/rce/propuesta/descargar",
-            "rce_resumen_consolidado": "/sire/rce/resumen/consolidado",
-            "rce_inconsistencias_montos": "/sire/rce/inconsistencias/montos",
-            "rce_inconsistencias_comprobantes": "/sire/rce/inconsistencias/comprobantes"
+            # RCE - Registro de Compras Electrónico (URLs OFICIALES)
+            "rce_descargar_propuesta": "/contribuyente/migeigv/libros/rce/propuesta/web/propuesta/{periodo}/exportacioncomprobantepropuesta/{codTipoArchivo}",
+            "rce_aceptar_propuesta": "/contribuyente/migeigv/libros/rce/propuesta/web/aceptarpropuesta",
+            "rce_resumen_consolidado": "/contribuyente/migeigv/libros/rce/resumen/web/resumencomprobantes/{periodo}/{codTipoResumen}/{codTipoArchivo}",
+            "rce_inconsistencias_montos": "/contribuyente/migeigv/libros/rce/inconsistencias/web/inconsistenciasmontostotales",
+            "rce_inconsistencias_comprobantes": "/contribuyente/migeigv/libros/rce/inconsistencias/web/inconsistenciascomprobantes"
         }
         
         self.timeout = timeout
@@ -195,7 +196,7 @@ class SunatApiClient:
             "scope": "https://api-sire.sunat.gob.pe",
             "client_id": credentials.client_id,
             "client_secret": credentials.client_secret,
-            "username": f"{credentials.ruc}{credentials.sunat_usuario}",  # SIN ESPACIO
+            "username": credentials.sunat_usuario,  # ✅ SOLO USUARIO (formato confirmado que funciona)
             "password": credentials.sunat_clave
         }
         
@@ -206,7 +207,7 @@ class SunatApiClient:
         }
         
         try:
-            # URL específica con client_id
+            # URL específica con client_id (formato confirmado que funciona)
             auth_url = f"{self.auth_url}/{credentials.client_id}/oauth2/token/"
             
             response = await self.client.request(
@@ -239,6 +240,12 @@ class SunatApiClient:
                 raise SireAuthException(f"Error en autenticación: {error_msg}")
             
             token_data = response.json()
+            
+            # DEBUGGING: Log de respuesta de SUNAT
+            logger.info(f"🔍 [DEBUG] Respuesta completa de SUNAT: {token_data}")
+            logger.info(f"🔍 [DEBUG] access_token (50 chars): {token_data.get('access_token', 'N/A')[:50]}...")
+            logger.info(f"🔍 [DEBUG] expires_in: {token_data.get('expires_in', 'N/A')}")
+            logger.info(f"🔍 [DEBUG] token_type: {token_data.get('token_type', 'N/A')}")
             
             return SireTokenData(
                 access_token=token_data["access_token"],
@@ -376,9 +383,15 @@ class SunatApiClient:
         
         Returns:
             bool: True si la API está disponible
+            
+        Nota: SUNAT no tiene endpoint de health público, 
+        verificamos con el endpoint de autenticación
         """
         try:
-            response = await self._make_request("GET", f"{self.base_url}/health")
-            return response.status_code == 200
-        except:
+            # En lugar de /health, verificamos que la URL base responda
+            # Hacemos una llamada mínima que no requiere autenticación
+            response = await self._make_request("GET", f"{self.base_url}")
+            return response.status_code in [200, 401, 403]  # 401/403 indican que el servidor responde
+        except Exception as e:
+            logger.warning(f"⚠️ [API] Health check failed: {str(e)}")
             return False

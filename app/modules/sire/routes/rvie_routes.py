@@ -139,8 +139,148 @@ async def get_company_service() -> CompanyService:
     """Obtener instancia del servicio de empresas"""
     return CompanyService()
 
+async def get_auth_service() -> SireAuthService:
+    """Obtener instancia del servicio de autenticación SIRE"""
+    try:
+        from ..services.api_client import SunatApiClient
+        from ..services.token_manager import SireTokenManager
+        from ....database import get_database
+        
+        # Obtener conexión a la base de datos
+        database = get_database()
+        
+        # Crear token manager con MongoDB
+        mongo_collection = None
+        try:
+            if database is not None:
+                mongo_collection = database.sire_sessions
+        except:
+            mongo_collection = None
+            
+        token_manager = SireTokenManager(mongo_collection=mongo_collection)
+        
+        # Crear cliente API
+        api_client = SunatApiClient()
+        
+        # Crear servicio de autenticación
+        return SireAuthService(api_client, token_manager)
+        
+    except Exception as e:
+        logger.error(f"❌ [AUTH] Error creando servicio de autenticación: {str(e)}")
+        # Fallback: crear sin MongoDB si hay problemas
+        from ..services.api_client import SunatApiClient
+        from ..services.token_manager import SireTokenManager
+        
+        token_manager = SireTokenManager()  # Sin MongoDB
+        api_client = SunatApiClient()
+        return SireAuthService(api_client, token_manager)
+
 # ========================================
-# ENDPOINTS GET PARA FRONTEND
+# ENDPOINTS FLUJO COMPLETO SEGÚN MANUAL v25
+# ========================================
+
+@router.post("/flujo-completo/{ruc}/{periodo}")
+async def ejecutar_flujo_completo_preliminar(
+    ruc: str,
+    periodo: str,
+    auto_aceptar: bool = True,
+    incluir_detalle: bool = True,
+    rvie_service: RvieService = Depends(get_rvie_service)
+):
+    """
+    Ejecutar flujo completo para registro preliminar RVIE
+    
+    SECUENCIA SEGÚN MANUAL SUNAT v25:
+    1. Validar prerrequisitos y sesión activa
+    2. Descargar propuesta SUNAT 
+    3. Aceptar propuesta (si auto_aceptar=True)
+    4. Preparar para registro preliminar
+    
+    Este endpoint implementa la secuencia mínima requerida según
+    el diagrama del Manual SUNAT para llegar al registro preliminar.
+    """
+    try:
+        # Importar controlador de flujo
+        from ..services.rvie_flow_controller import RvieFlowController
+        from ..services.api_client import SunatApiClient
+        from ..services.token_manager import SireTokenManager
+        from ....database import get_database
+        
+        # Crear dependencias
+        database = get_database()
+        mongo_collection = database.sire_sessions if database else None
+        token_manager = SireTokenManager(mongo_collection=mongo_collection)
+        api_client = SunatApiClient()
+        
+        # Crear controlador de flujo
+        flow_controller = RvieFlowController(api_client, token_manager, database)
+        
+        # Ejecutar flujo completo
+        resultado = await flow_controller.ejecutar_flujo_completo_preliminar(
+            ruc=ruc,
+            periodo=periodo,
+            auto_aceptar=auto_aceptar,
+            incluir_detalle=incluir_detalle
+        )
+        
+        return {
+            "success": True,
+            "message": "Flujo completo ejecutado exitosamente",
+            "data": resultado
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [RVIE-FLUJO] Error en flujo completo: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error ejecutando flujo completo: {str(e)}"
+        )
+
+@router.get("/estado/{ruc}/{periodo}")
+async def obtener_estado_proceso_rvie(
+    ruc: str,
+    periodo: str,
+    rvie_service: RvieService = Depends(get_rvie_service)
+):
+    """
+    Obtener estado actual del proceso RVIE para un período
+    
+    Devuelve el estado actual, siguiente acción recomendada,
+    y resumen de datos del proceso.
+    """
+    try:
+        # Importar controlador de flujo
+        from ..services.rvie_flow_controller import RvieFlowController
+        from ..services.api_client import SunatApiClient
+        from ..services.token_manager import SireTokenManager
+        from ....database import get_database
+        
+        # Crear dependencias
+        database = get_database()
+        mongo_collection = database.sire_sessions if database else None
+        token_manager = SireTokenManager(mongo_collection=mongo_collection)
+        api_client = SunatApiClient()
+        
+        # Crear controlador de flujo
+        flow_controller = RvieFlowController(api_client, token_manager, database)
+        
+        # Obtener estado
+        estado = await flow_controller.obtener_estado_proceso_rvie(ruc, periodo)
+        
+        return {
+            "success": True,
+            "data": estado
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [RVIE-ESTADO] Error consultando estado: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error consultando estado: {str(e)}"
+        )
+
+# ========================================
+# ENDPOINTS ESPECÍFICOS SEGÚN MANUAL v25  
 # ========================================
 
 @router.get("/{ruc}/resumen/{periodo}")
@@ -232,7 +372,8 @@ async def descargar_propuesta(
     request: RvieDescargarPropuestaRequest,
     background_tasks: BackgroundTasks,
     rvie_service: RvieService = Depends(get_rvie_service),
-    company_service: CompanyService = Depends(get_company_service)
+    company_service: CompanyService = Depends(get_company_service),
+    auth_service: SireAuthService = Depends(get_auth_service)
 ):
     """
     Descargar propuesta RVIE desde SUNAT según Manual v25
@@ -265,6 +406,35 @@ async def descargar_propuesta(
                 status_code=400, 
                 detail="Company does not have SIRE credentials configured"
             )
+        
+        # AUTENTICACIÓN AUTOMÁTICA: Verificar si hay sesión activa y autenticar si es necesario
+        from ..models.auth import SireCredentials
+        
+        # Verificar estado de autenticación
+        auth_status = await auth_service.get_auth_status(request.ruc)
+        
+        if not auth_status.sesion_activa:
+            logger.info(f"🔑 [API] No hay sesión activa para RUC {request.ruc}, iniciando autenticación automática")
+            
+            # Crear credenciales desde los datos de la empresa
+            credentials = SireCredentials(
+                ruc=company.ruc,
+                sunat_usuario=company.sunat_usuario,  # Corregido: usar atributo del modelo
+                sunat_clave=company.sunat_clave,      # Corregido: usar atributo del modelo
+                client_id=company.sire_client_id,
+                client_secret=company.sire_client_secret
+            )
+            
+            # Autenticar automáticamente
+            try:
+                auth_response = await auth_service.authenticate(credentials)
+                logger.info(f"✅ [API] Autenticación automática exitosa para RUC {request.ruc}")
+            except Exception as auth_error:
+                logger.error(f"❌ [API] Error en autenticación automática: {str(auth_error)}")
+                raise HTTPException(
+                    status_code=401, 
+                    detail=f"Error de autenticación SUNAT: {str(auth_error)}"
+                )
         
         logger.info(
             f"🚀 [API] Descargando propuesta RVIE para RUC {request.ruc}, período {request.periodo}. "

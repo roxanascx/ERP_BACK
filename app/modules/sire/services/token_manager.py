@@ -49,8 +49,23 @@ class SireTokenManager:
             str: ID de sesión generado
         """
         try:
-            # Calcular fecha de expiración
-            expires_at = datetime.utcnow() + timedelta(seconds=token_data.expires_in)
+            # Calcular fecha de expiración (CORREGIDO: usar timezone de Perú)
+            from zoneinfo import ZoneInfo
+            import pytz
+            
+            # SUNAT opera en timezone de Perú (UTC-5)
+            peru_tz = pytz.timezone('America/Lima')
+            now_utc = datetime.utcnow()
+            now_peru = now_utc.replace(tzinfo=pytz.UTC).astimezone(peru_tz)
+            
+            # El token expira en X segundos desde AHORA (en tiempo de Perú)
+            expires_at_peru = now_peru + timedelta(seconds=token_data.expires_in)
+            expires_at = expires_at_peru.astimezone(pytz.UTC).replace(tzinfo=None)
+            
+            logger.info(f"🕒 [TOKEN] Tiempo actual UTC: {now_utc}")
+            logger.info(f"🕒 [TOKEN] Tiempo actual Perú: {now_peru}")
+            logger.info(f"🕒 [TOKEN] Token expira en: {token_data.expires_in} segundos")
+            logger.info(f"🕒 [TOKEN] Token expira el: {expires_at} UTC")
             
             # Generar ID de sesión único
             session_id = f"sire_session_{ruc}_{int(datetime.utcnow().timestamp())}"
@@ -327,9 +342,20 @@ class SireTokenManager:
         return None
     
     def _is_token_expiring_soon(self, session: SireSession) -> bool:
-        """Verificar si el token expira pronto"""
-        buffer_time = datetime.utcnow() + timedelta(seconds=self.default_expiry_buffer)
-        return session.expires_at <= buffer_time
+        """Verificar si el token expira pronto (CORREGIDO: considerar timezone)"""
+        import pytz
+        
+        # Usar tiempo actual en UTC (como almacenamos expires_at)
+        now_utc = datetime.utcnow()
+        buffer_time = now_utc + timedelta(seconds=self.default_expiry_buffer)
+        
+        is_expiring = session.expires_at <= buffer_time
+        
+        if is_expiring:
+            time_left = (session.expires_at - now_utc).total_seconds()
+            logger.info(f"🕒 [TOKEN] Token expira en {time_left} segundos")
+        
+        return is_expiring
     
     async def _refresh_token_if_possible(self, session: SireSession) -> Optional[str]:
         """Intentar renovar token si es posible"""
