@@ -176,6 +176,41 @@ async def get_auth_service() -> SireAuthService:
         return SireAuthService(api_client, token_manager)
 
 # ========================================
+# FUNCIONES DE VALIDACIÓN Y DEPENDENCIAS
+# ========================================
+
+async def validate_ruc_access(ruc: str, company_service: CompanyService = Depends(get_company_service)) -> CompanyModel:
+    """Validar que el RUC existe y es accesible"""
+    try:
+        company = await company_service.get_company_model(ruc)
+        if not company:
+            raise HTTPException(status_code=404, detail=f"Company with RUC {ruc} not found")
+        
+        if not company.tiene_sire():
+            raise HTTPException(
+                status_code=400, 
+                detail="Company does not have SIRE credentials configured"
+            )
+        
+        return company
+    except Exception as e:
+        logger.error(f"Error validating RUC access for {ruc}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error validating company access")
+
+async def validate_ruc_from_request(request: RvieGenerarTicketRequest, company_service: CompanyService = Depends(get_company_service)) -> CompanyModel:
+    """Validar RUC desde el request body"""
+    try:
+        company = await company_service.get_company_model(request.ruc)
+        if not company:
+            raise HTTPException(status_code=404, detail=f"RUC {request.ruc} no encontrado")
+        return company
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error validando RUC {request.ruc}: {e}")
+        raise HTTPException(status_code=500, detail="Error interno validando RUC")
+
+# ========================================
 # ENDPOINTS FLUJO COMPLETO SEGÚN MANUAL v25
 # ========================================
 
@@ -283,28 +318,100 @@ async def obtener_estado_proceso_rvie(
 # ENDPOINTS ESPECÍFICOS SEGÚN MANUAL v25  
 # ========================================
 
-@router.get("/{ruc}/resumen/{periodo}")
+@router.get("/{ruc}/resumen/{periodo}", response_model=RvieResumenResponse)
 async def obtener_resumen_rvie(
     ruc: str,
     periodo: str,
+    company: CompanyModel = Depends(validate_ruc_access),
     rvie_service: RvieService = Depends(get_rvie_service)
 ):
-    """Obtener resumen RVIE para un período específico"""
+    """
+    Obtener resumen RVIE para un período específico
+    
+    Consulta propuesta guardada en cache/BD y retorna resumen sin nueva descarga.
+    """
     try:
-        # Simular datos de resumen por ahora
-        return {
-            "ruc": ruc,
-            "periodo": periodo,
-            "total_comprobantes": 150,
-            "total_importe": 125000.50,
-            "inconsistencias_pendientes": 3,
-            "estado_proceso": "En proceso",
-            "fecha_ultima_actualizacion": "2025-08-13T10:30:00",
-            "tickets_activos": []
-        }
+        logger.info(f"📊 [API] Consultando resumen RVIE para RUC {ruc}, período {periodo}")
+        
+        # Validar que el RUC coincide con la empresa autenticada
+        if ruc != company.ruc:
+            raise HTTPException(
+                status_code=403, 
+                detail=f"RUC solicitado {ruc} no coincide con empresa autenticada {company.ruc}"
+            )
+        
+        # Obtener resumen desde cache o BD (sin nueva descarga)
+        resumen = await rvie_service.obtener_resumen_guardado(ruc, periodo)
+        
+        if not resumen:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No se encontró propuesta RVIE para {ruc}-{periodo}. "
+                       f"Debe descargar la propuesta primero."
+            )
+        
+        logger.info(f"✅ [API] Resumen RVIE obtenido desde cache/BD para {ruc}-{periodo}")
+        return resumen
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error obteniendo resumen RVIE: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ [API] Error obteniendo resumen RVIE: {e}")
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+@router.get("/{ruc}/propuesta/{periodo}", response_model=RviePropuestaResponse)
+async def consultar_propuesta_guardada(
+    ruc: str,
+    periodo: str,
+    company: CompanyModel = Depends(validate_ruc_access),
+    rvie_service: RvieService = Depends(get_rvie_service)
+):
+    """
+    Consultar propuesta RVIE guardada (sin nueva descarga)
+    
+    Obtiene propuesta desde cache/BD para mostrar datos guardados.
+    """
+    try:
+        logger.info(f"📄 [API] Consultando propuesta guardada para RUC {ruc}, período {periodo}")
+        
+        # Validar que el RUC coincide con la empresa autenticada
+        if ruc != company.ruc:
+            raise HTTPException(
+                status_code=403, 
+                detail=f"RUC solicitado {ruc} no coincide con empresa autenticada {company.ruc}"
+            )
+        
+        # Buscar propuesta en cache o BD
+        propuesta = await rvie_service._obtener_propuesta_cache(ruc, periodo)
+        
+        if not propuesta:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No se encontró propuesta RVIE guardada para {ruc}-{periodo}. "
+                       f"Debe descargar la propuesta desde SUNAT primero."
+            )
+        
+        # Convertir a response
+        propuesta_response = RviePropuestaResponse(
+            ruc=propuesta.ruc,
+            periodo=propuesta.periodo,
+            fecha_generacion=propuesta.fecha_generacion,
+            comprobantes=propuesta.comprobantes,
+            total_importe=float(propuesta.total_importe),
+            cantidad_comprobantes=propuesta.cantidad_comprobantes,
+            estado="GUARDADO",
+            archivo_contenido="",  # No incluir contenido completo por eficiencia
+            mensaje="Propuesta obtenida desde cache/BD"
+        )
+        
+        logger.info(f"✅ [API] Propuesta guardada obtenida para {ruc}-{periodo}")
+        return propuesta_response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ [API] Error consultando propuesta guardada: {e}")
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 @router.get("/{ruc}/inconsistencias/{periodo}")
 async def obtener_inconsistencias_rvie(
@@ -347,24 +454,6 @@ async def obtener_inconsistencias_rvie(
     except Exception as e:
         logger.error(f"Error obteniendo inconsistencias RVIE: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-async def validate_ruc_access(ruc: str, company_service: CompanyService = Depends(get_company_service)) -> CompanyModel:
-    """Validar que el RUC existe y es accesible"""
-    try:
-        company = await company_service.get_company_model(ruc)
-        if not company:
-            raise HTTPException(status_code=404, detail=f"Company with RUC {ruc} not found")
-        
-        if not company.tiene_sire():
-            raise HTTPException(
-                status_code=400, 
-                detail="Company does not have SIRE credentials configured"
-            )
-        
-        return company
-    except Exception as e:
-        logger.error(f"Error validating RUC access for {ruc}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error validating company access")
 
 
 @router.post("/descargar-propuesta", response_model=RviePropuestaResponse)
@@ -629,20 +718,6 @@ async def consultar_inconsistencias(
     except Exception as e:
         logger.error(f"Error consultando inconsistencias RVIE: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
-
-
-async def validate_ruc_from_request(request: RvieGenerarTicketRequest, company_service: CompanyService = Depends(get_company_service)) -> CompanyModel:
-    """Validar RUC desde el request body"""
-    try:
-        company = await company_service.get_company_model(request.ruc)
-        if not company:
-            raise HTTPException(status_code=404, detail=f"RUC {request.ruc} no encontrado")
-        return company
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error validando RUC {request.ruc}: {e}")
-        raise HTTPException(status_code=500, detail="Error interno validando RUC")
 
 
 @router.post("/generar-ticket", response_model=RvieTicketResponse)

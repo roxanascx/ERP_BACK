@@ -281,11 +281,11 @@ class SireAuthService:
     async def _authenticate_with_sunat(self, credentials: SireCredentials) -> SireTokenData:
         """Realizar autenticación con API SUNAT usando credenciales correctas"""
         try:
-            # NUEVO: Usar credenciales del manager que funcionan
-            working_credentials = credentials_manager.get_credentials(credentials.ruc)
+            # NUEVO: Usar credenciales del manager que funcionan (ahora async)
+            working_credentials = await credentials_manager.get_credentials(credentials.ruc)
             
             if working_credentials:
-                logger.info(f"🔑 [AUTH] Usando credenciales verificadas para RUC {credentials.ruc}")
+                logger.info(f"🔑 [AUTH] Usando credenciales verificadas desde MongoDB para RUC {credentials.ruc}")
                 # Usar las credenciales que sabemos que funcionan
                 token_data = await self.api_client.authenticate(working_credentials)
             else:

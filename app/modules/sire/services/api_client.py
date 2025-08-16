@@ -37,8 +37,9 @@ class SunatApiClient:
             "auth_token": "/clientessol/{client_id}/oauth2/token",
             
             # RVIE - Registro de Ventas e Ingresos Electrónico (URLs OFICIALES según Manual v25)
+            "rvie_consultar_periodos": "/contribuyente/migeigv/libros/rvierce/padron/web/omisos/140000/periodos",  # 5.2 según Manual v25
             "rvie_descargar_propuesta": "/contribuyente/migeigv/libros/rvie/propuesta/web/propuesta/{periodo}/exportapropuesta",  # URL CORRECTA línea 2893
-            "rvie_aceptar_propuesta": "/contribuyente/migeigv/libros/rvie/propuesta/web/aceptarpropuesta",
+            "rvie_aceptar_propuesta": "/contribuyente/migeigv/libros/rvie/propuesta/web/propuesta/{periodo}/aceptapropuesta",
             "rvie_reemplazar_propuesta": "/contribuyente/migeigv/libros/rvie/propuesta/web/reemplazarpropuesta", 
             "rvie_registrar_preliminar": "/contribuyente/migeigv/libros/rvie/preliminar/web/preliminarregistrado",
             "rvie_inconsistencias": "/contribuyente/migeigv/libros/rvie/inconsistencias/web/inconsistenciascomprobantes",

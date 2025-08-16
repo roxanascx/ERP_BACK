@@ -1,38 +1,38 @@
 """
 Gestor de credenciales SIRE
-Maneja las credenciales específicas para cada RUC basado en los scripts exitosos
+Maneja las credenciales específicas para cada RUC desde MongoDB
 """
 
 from typing import Dict, Optional
+import logging
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from ....database import get_database
 from ..models.auth import SireCredentials
+
+logger = logging.getLogger(__name__)
 
 
 class SireCredentialsManager:
-    """Gestor de credenciales SIRE por RUC"""
+    """Gestor de credenciales SIRE por RUC desde MongoDB"""
     
     def __init__(self):
-        """Inicializar gestor con credenciales conocidas que funcionan"""
-        # Credenciales basadas en el script exitoso token_simple.py
-        self._credentials_map: Dict[str, Dict[str, str]] = {
+        """Inicializar gestor con acceso a MongoDB"""
+        self.db: AsyncIOMotorDatabase = get_database()
+        
+        # Fallback hardcoded para casos específicos (mantener como backup)
+        self._fallback_credentials: Dict[str, Dict[str, str]] = {
             # RUC de prueba exitoso del script token_simple.py
             "20612969125": {
                 "sunat_usuario": "THENTHIP",
                 "sunat_clave": "enteatell", 
-                "client_id": "aa3f9b5c-7013-4ded-a63a-5ee658ce3530",
-                "client_secret": "MOIzbzE3lAj/W5EkokXEbA=="
-            },
-            # RUC que está fallando en los logs - actualizamos con credenciales que funcionan
-            "10426346082": {
-                "sunat_usuario": "42634608",  # Usuario que aparece en el log exitoso 
-                "sunat_clave": "enteatell",  # Usamos la misma clave que funciona
-                "client_id": "a4169db2-5e94-4916-a2c5-b4e0a5158938",  # Del log exitoso
-                "client_secret": "client_secret_placeholder"  # Necesita el correcto
+                "sire_client_id": "aa3f9b5c-7013-4ded-a63a-5ee658ce3530",
+                "sire_client_secret": "MOIzbzE3lAj/W5EkokXEbA=="
             }
         }
     
-    def get_credentials(self, ruc: str) -> Optional[SireCredentials]:
+    async def get_credentials(self, ruc: str) -> Optional[SireCredentials]:
         """
-        Obtener credenciales para un RUC específico
+        Obtener credenciales para un RUC específico desde MongoDB
         
         Args:
             ruc: RUC del contribuyente
@@ -40,59 +40,65 @@ class SireCredentialsManager:
         Returns:
             SireCredentials si existen para el RUC, None si no
         """
-        if ruc not in self._credentials_map:
+        try:
+            # Primero buscar en MongoDB
+            empresa = await self.db.companies.find_one({"ruc": ruc})
+            
+            if empresa and empresa.get("sire_activo"):
+                # Verificar que tenga todas las credenciales necesarias
+                required_fields = ["sunat_usuario", "sunat_clave", "sire_client_id", "sire_client_secret"]
+                
+                if all(empresa.get(field) for field in required_fields):
+                    logger.info(f"✅ [CREDENTIALS] Credenciales encontradas en MongoDB para RUC {ruc}")
+                    return SireCredentials(
+                        ruc=ruc,
+                        sunat_usuario=empresa["sunat_usuario"],
+                        sunat_clave=empresa["sunat_clave"],
+                        client_id=empresa["sire_client_id"],
+                        client_secret=empresa["sire_client_secret"]
+                    )
+                else:
+                    missing_fields = [field for field in required_fields if not empresa.get(field)]
+                    logger.warning(f"⚠️ [CREDENTIALS] RUC {ruc} en MongoDB pero faltan campos: {missing_fields}")
+            
+            # Fallback a credenciales hardcoded
+            if ruc in self._fallback_credentials:
+                logger.info(f"🔄 [CREDENTIALS] Usando credenciales fallback para RUC {ruc}")
+                cred_data = self._fallback_credentials[ruc]
+                
+                return SireCredentials(
+                    ruc=ruc,
+                    sunat_usuario=cred_data["sunat_usuario"],
+                    sunat_clave=cred_data["sunat_clave"],
+                    client_id=cred_data["sire_client_id"],
+                    client_secret=cred_data["sire_client_secret"]
+                )
+            
+            logger.warning(f"❌ [CREDENTIALS] No se encontraron credenciales para RUC {ruc}")
             return None
             
-        cred_data = self._credentials_map[ruc]
-        
-        return SireCredentials(
-            ruc=ruc,
-            sunat_usuario=cred_data["sunat_usuario"],
-            sunat_clave=cred_data["sunat_clave"],
-            client_id=cred_data["client_id"],
-            client_secret=cred_data["client_secret"]
-        )
+        except Exception as e:
+            logger.error(f"❌ [CREDENTIALS] Error obteniendo credenciales para RUC {ruc}: {e}")
+            return None
     
-    def add_credentials(self, ruc: str, sunat_usuario: str, sunat_clave: str, 
-                       client_id: str, client_secret: str) -> None:
+    def get_credentials_sync(self, ruc: str) -> Optional[SireCredentials]:
         """
-        Agregar credenciales para un RUC
-        
-        Args:
-            ruc: RUC del contribuyente
-            sunat_usuario: Usuario SUNAT
-            sunat_clave: Clave SOL
-            client_id: Client ID de la aplicación
-            client_secret: Client Secret de la aplicación
+        Versión síncrona para compatibilidad - solo usa fallback
+        DEPRECATED: Usar get_credentials() async
         """
-        self._credentials_map[ruc] = {
-            "sunat_usuario": sunat_usuario,
-            "sunat_clave": sunat_clave,
-            "client_id": client_id,
-            "client_secret": client_secret
-        }
-    
-    def has_credentials(self, ruc: str) -> bool:
-        """
-        Verificar si existen credenciales para un RUC
-        
-        Args:
-            ruc: RUC del contribuyente
+        if ruc in self._fallback_credentials:
+            cred_data = self._fallback_credentials[ruc]
             
-        Returns:
-            True si existen credenciales, False si no
-        """
-        return ruc in self._credentials_map
-    
-    def list_available_rucs(self) -> list[str]:
-        """
-        Listar RUCs con credenciales disponibles
+            return SireCredentials(
+                ruc=ruc,
+                sunat_usuario=cred_data["sunat_usuario"],
+                sunat_clave=cred_data["sunat_clave"],
+                client_id=cred_data["sire_client_id"],
+                client_secret=cred_data["sire_client_secret"]
+            )
         
-        Returns:
-            Lista de RUCs configurados
-        """
-        return list(self._credentials_map.keys())
+        return None
 
 
-# Instancia global del gestor
+# Crear instancia global del gestor
 credentials_manager = SireCredentialsManager()

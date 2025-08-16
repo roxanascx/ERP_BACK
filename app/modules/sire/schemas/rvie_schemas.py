@@ -409,11 +409,15 @@ class RvieResumenResponse(BaseModel):
     ruc: str
     periodo: str
     total_comprobantes: int
-    total_base_imponible: Decimal
-    total_igv: Decimal
-    total_importe: Decimal
-    estado_actual: str
-    fecha_ultimo_proceso: Optional[datetime] = None
+    total_base_imponible: float = Field(default=0.0)
+    total_igv: float = Field(default=0.0)
+    total_otros_tributos: float = Field(default=0.0)
+    total_importe: float = Field(default=0.0)
+    estado_proceso: str = Field(default="PENDIENTE")
+    fecha_descarga: Optional[str] = None
+    fecha_ultima_actualizacion: str
+    inconsistencias_pendientes: int = Field(default=0)
+    tickets_activos: List[str] = Field(default_factory=list)
     resumen_por_tipo: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     archivos_disponibles: List[str] = Field(default_factory=list)
     
@@ -425,13 +429,17 @@ class RvieResumenResponse(BaseModel):
                 "total_comprobantes": 150,
                 "total_base_imponible": 125000.00,
                 "total_igv": 22500.00,
+                "total_otros_tributos": 0.00,
                 "total_importe": 147500.00,
-                "estado_actual": "FINALIZADO",
-                "fecha_ultimo_proceso": "2024-08-13T15:30:00",
+                "estado_proceso": "DESCARGADO",
+                "fecha_descarga": "2024-08-13T14:30:00",
+                "fecha_ultima_actualizacion": "2024-08-13T15:30:00",
+                "inconsistencias_pendientes": 0,
+                "tickets_activos": ["TKT123456789"],
                 "resumen_por_tipo": {
                     "01": {"cantidad": 100, "importe": 100000.00},
                     "03": {"cantidad": 50, "importe": 47500.00}
                 },
-                "archivos_disponibles": ["propuesta.txt", "inconsistencias.txt"]
+                "archivos_disponibles": ["propuesta.txt", "resumen.json"]
             }
         }

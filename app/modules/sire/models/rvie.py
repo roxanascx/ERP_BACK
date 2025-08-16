@@ -147,3 +147,98 @@ class RvieResumen(BaseModel):
     
     # Archivos generados
     archivos_disponibles: List[str] = Field(default_factory=list)
+
+
+# ========================================
+# MODELOS DE REQUEST Y RESPONSE
+# ========================================
+
+class RvieDescargarPropuestaRequest(BaseModel):
+    """Request para descargar propuesta RVIE"""
+    ruc: str = Field(..., description="RUC del contribuyente")
+    periodo: str = Field(..., description="Periodo YYYYMM")
+    forzar_descarga: bool = Field(default=False, description="Forzar nueva descarga")
+    incluir_detalle: bool = Field(default=True, description="Incluir detalle de comprobantes")
+
+
+class RvieAceptarPropuestaRequest(BaseModel):
+    """Request para aceptar propuesta RVIE"""
+    ruc: str = Field(..., description="RUC del contribuyente")
+    periodo: str = Field(..., description="Periodo YYYYMM")
+    acepta_completa: bool = Field(default=True, description="Acepta propuesta completa")
+    observaciones: Optional[str] = Field(None, max_length=500, description="Observaciones opcionales")
+
+
+class RvieRegistrarPreliminarRequest(BaseModel):
+    """Request para registrar preliminar RVIE"""
+    ruc: str = Field(..., description="RUC del contribuyente")
+    periodo: str = Field(..., description="Periodo YYYYMM")
+    propuesta_aceptada: bool = Field(default=True, description="Si hay propuesta aceptada")
+    observaciones: Optional[str] = Field(None, max_length=500, description="Observaciones opcionales")
+
+
+class RvieReemplazarPropuestaRequest(BaseModel):
+    """Request para reemplazar propuesta RVIE"""
+    ruc: str = Field(..., description="RUC del contribuyente")
+    periodo: str = Field(..., description="Periodo YYYYMM")
+    archivo_nombre: str = Field(..., description="Nombre del archivo")
+    archivo_contenido: bytes = Field(..., description="Contenido del archivo")
+    formato: str = Field(default="txt", description="Formato del archivo (txt, csv)")
+
+
+class RvieGenerarTicketRequest(BaseModel):
+    """Request para generar ticket RVIE"""
+    ruc: str = Field(..., description="RUC del contribuyente")
+    periodo: str = Field(..., description="Periodo YYYYMM")
+    operacion: str = Field(..., description="Tipo de operación")
+
+
+# ========================================
+# MODELOS DE RESPONSE
+# ========================================
+
+class RviePropuestaResponse(BaseModel):
+    """Response de propuesta RVIE"""
+    ruc: str = Field(..., description="RUC del contribuyente")
+    periodo: str = Field(..., description="Periodo YYYYMM")
+    estado: str = Field(..., description="Estado de la propuesta")
+    fecha_generacion: datetime = Field(..., description="Fecha de generación")
+    cantidad_comprobantes: int = Field(..., description="Cantidad de comprobantes")
+    total_base_imponible: Decimal = Field(..., description="Total base imponible")
+    total_igv: Decimal = Field(..., description="Total IGV")
+    total_otros_tributos: Decimal = Field(..., description="Total otros tributos")
+    total_importe: Decimal = Field(..., description="Total importe")
+    comprobantes: List[RvieComprobante] = Field(default_factory=list)
+    ticket_id: Optional[str] = Field(None, description="ID del ticket")
+    progreso_porcentaje: int = Field(default=100, description="Progreso del procesamiento")
+
+
+class RvieProcesoResponse(BaseModel):
+    """Response de proceso RVIE"""
+    ruc: str = Field(..., description="RUC del contribuyente")
+    periodo: str = Field(..., description="Periodo YYYYMM")
+    operacion: str = Field(..., description="Operación realizada")
+    estado: str = Field(..., description="Estado del proceso")
+    exitoso: bool = Field(..., description="Si el proceso fue exitoso")
+    mensaje: str = Field(..., description="Mensaje del resultado")
+    ticket_id: Optional[str] = Field(None, description="ID del ticket generado")
+    fecha_proceso: datetime = Field(default_factory=datetime.utcnow)
+    datos_adicionales: Optional[Dict[str, Any]] = Field(None, description="Datos adicionales")
+
+
+class RvieTicketResponse(BaseModel):
+    """Response de ticket RVIE"""
+    ticket_id: str = Field(..., description="ID del ticket")
+    ruc: str = Field(..., description="RUC del contribuyente")
+    periodo: str = Field(..., description="Periodo YYYYMM")
+    operacion: str = Field(..., description="Operación")
+    estado: str = Field(..., description="Estado del ticket")
+    descripcion: str = Field(..., description="Descripción del ticket")
+    progreso_porcentaje: int = Field(default=0, description="Progreso 0-100")
+    fecha_creacion: str = Field(..., description="Fecha de creación")
+    fecha_actualizacion: str = Field(..., description="Fecha de actualización")
+    resultado: Optional[Dict[str, Any]] = Field(None, description="Resultado del proceso")
+    error_mensaje: Optional[str] = Field(None, description="Mensaje de error si aplica")
+    archivo_nombre: Optional[str] = Field(None, description="Nombre del archivo generado")
+    archivo_disponible: bool = Field(default=False, description="Si hay archivo disponible")
+    archivo_size: int = Field(default=0, description="Tamaño del archivo en bytes")
