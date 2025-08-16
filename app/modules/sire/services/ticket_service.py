@@ -39,6 +39,28 @@ class SireTicketService:
         self.file_storage_path = os.getenv("SIRE_FILE_STORAGE", "./temp/sire_files")
         os.makedirs(self.file_storage_path, exist_ok=True)
     
+    def _normalize_ruc(self, ruc: str) -> str:
+        """
+        Normalizar RUC eliminando espacios y caracteres extra
+        
+        Args:
+            ruc: RUC a normalizar
+            
+        Returns:
+            str: RUC normalizado
+        """
+        if not ruc:
+            return ruc
+            
+        # Limpiar espacios y caracteres especiales
+        normalized = ''.join(c for c in str(ruc).strip() if c.isdigit())
+        
+        # Validar longitud (RUC debe tener 11 dígitos)
+        if len(normalized) != 11:
+            self.logger.warning(f"⚠️ [TICKET] RUC {ruc} normalizado a {normalized} no tiene 11 dígitos")
+        
+        return normalized
+    
     # ==================== CREAR TICKETS ====================
     
     async def create_ticket(self, 

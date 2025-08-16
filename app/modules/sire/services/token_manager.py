@@ -156,9 +156,8 @@ class SireTokenManager:
             str: Token de sesión activa o None si no existe
         """
         try:
-            
-            # Buscar sesión activa
-            session = await self._find_active_session(ruc)
+            # Buscar sesión activa (método corregido)
+            session = await self._find_active_session_corrected(ruc)
             if not session:
                 logger.warning(f"⚠️ [TOKEN] No se encontró sesión activa para RUC {ruc}")
                 return None
@@ -166,12 +165,15 @@ class SireTokenManager:
             # Verificar que no esté expirada (sin renovar)
             if session.expires_at <= datetime.utcnow():
                 logger.warning(f"⚠️ [TOKEN] Sesión expirada para RUC {ruc}")
+                # Limpiar sesión expirada
+                await self._cleanup_expired_session(session)
                 return None
                 
             # Actualizar último uso
             session.last_used = datetime.utcnow()
             await self._update_session_usage(session)
             
+            logger.info(f"✅ [TOKEN] Token activo encontrado para RUC {ruc}")
             return session.access_token
             
         except Exception as e:
@@ -340,6 +342,229 @@ class SireTokenManager:
         
         logger.warning(f"⚠️ [TOKEN] No se encontró sesión activa para RUC {ruc} en ningún lugar")
         return None
+    
+    async def _find_active_session_corrected(self, ruc: str) -> Optional[SireSession]:
+        """
+        Buscar sesión activa corregida - versión que funciona
+        INCLUYE LIMPIEZA AUTOMÁTICA DE TOKENS EXPIRADOS
+        
+        Args:
+            ruc: RUC del contribuyente
+            
+        Returns:
+            SireSession activa o None
+        """
+        try:
+            # CRÍTICO: Limpiar RUC para evitar errores de formato
+            ruc_clean = str(ruc).strip()
+            logger.debug(f"🔍 [TOKEN] Buscando sesión activa para RUC {ruc_clean}")
+            
+            # 1. Primero limpiar tokens expirados automáticamente
+            await self._cleanup_expired_tokens(ruc_clean)
+            
+            # 2. Buscar en cache de memoria (más rápido)
+            for session_id, session in self.token_cache.items():
+                if (session.ruc == ruc_clean and 
+                    session.is_active and 
+                    session.expires_at > datetime.utcnow()):
+                    logger.debug(f"✅ [TOKEN] Sesión encontrada en cache: {session_id}")
+                    return session
+            
+            # 3. Buscar en Redis si está disponible
+            if self.redis_client:
+                try:
+                    # Buscar todas las sesiones que coincidan con el patrón
+                    keys = await self.redis_client.keys(f"sire_session_{ruc_clean}_*")
+                    for key in keys:
+                        session_data = await self.redis_client.get(key)
+                        if session_data:
+                            session_dict = json.loads(session_data)
+                            session = SireSession(**session_dict)
+                            
+                            if (session.is_active and 
+                                session.expires_at > datetime.utcnow()):
+                                logger.debug(f"✅ [TOKEN] Sesión encontrada en Redis: {key}")
+                                # También guardarlo en cache para próximas consultas
+                                self.token_cache[key] = session
+                                return session
+                except Exception as e:
+                    logger.warning(f"⚠️ [TOKEN] Error buscando en Redis: {e}")
+            
+            # 4. Buscar en MongoDB como último recurso
+            if self.mongo_collection is not None:
+                try:
+                    session_doc = await self.mongo_collection.find_one({
+                        "ruc": ruc_clean,
+                        "is_active": True,
+                        "expires_at": {"$gt": datetime.utcnow()}
+                    })
+                    
+                    if session_doc:
+                        session = SireSession(**session_doc)
+                        logger.debug(f"✅ [TOKEN] Sesión encontrada en MongoDB")
+                        # Guardarlo en cache para próximas consultas
+                        session_id = f"sire_session_{ruc_clean}_{int(session.created_at.timestamp())}"
+                        self.token_cache[session_id] = session
+                        return session
+                except Exception as e:
+                    logger.warning(f"⚠️ [TOKEN] Error buscando en MongoDB: {e}")
+            
+            logger.warning(f"⚠️ [TOKEN] No se encontró sesión activa para RUC {ruc_clean}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ [TOKEN] Error en búsqueda de sesión para RUC {ruc}: {e}")
+            return None
+    
+    async def _cleanup_expired_session(self, session: SireSession):
+        """Limpiar sesión expirada de todos los stores"""
+        try:
+            # Limpiar de cache
+            keys_to_remove = []
+            for session_id, cached_session in self.token_cache.items():
+                if cached_session.ruc == session.ruc and cached_session.access_token == session.access_token:
+                    keys_to_remove.append(session_id)
+            
+            for key in keys_to_remove:
+                del self.token_cache[key]
+            
+            # Limpiar de Redis
+            if self.redis_client:
+                keys = await self.redis_client.keys(f"sire_session_{session.ruc}_*")
+                for key in keys:
+                    await self.redis_client.delete(key)
+            
+            # Marcar como inactiva en MongoDB
+            if self.mongo_collection is not None:
+                await self.mongo_collection.update_one(
+                    {"ruc": session.ruc, "access_token": session.access_token},
+                    {"$set": {"is_active": False}}
+                )
+                
+            logger.info(f"🧹 [TOKEN] Sesión expirada limpiada para RUC {session.ruc}")
+            
+        except Exception as e:
+            logger.error(f"❌ [TOKEN] Error limpiando sesión expirada: {e}")
+    
+    async def _cleanup_expired_tokens(self, ruc: str):
+        """
+        Limpiar automáticamente todos los tokens expirados para un RUC específico
+        
+        Args:
+            ruc: RUC del contribuyente
+        """
+        try:
+            now = datetime.utcnow()
+            cleaned_count = 0
+            
+            # 1. Limpiar cache de memoria
+            keys_to_remove = []
+            for session_id, session in self.token_cache.items():
+                if session.ruc == ruc and (not session.is_active or session.expires_at <= now):
+                    keys_to_remove.append(session_id)
+            
+            for key in keys_to_remove:
+                del self.token_cache[key]
+                cleaned_count += 1
+            
+            # 2. Limpiar Redis
+            if self.redis_client:
+                try:
+                    keys = await self.redis_client.keys(f"sire_session_{ruc}_*")
+                    for key in keys:
+                        session_data = await self.redis_client.get(key)
+                        if session_data:
+                            session_dict = json.loads(session_data)
+                            expires_at = datetime.fromisoformat(session_dict.get('expires_at', '1970-01-01'))
+                            
+                            if expires_at <= now:
+                                await self.redis_client.delete(key)
+                                cleaned_count += 1
+                except Exception as e:
+                    logger.warning(f"⚠️ [TOKEN] Error limpiando Redis: {e}")
+            
+            # 3. Marcar como inactivos en MongoDB (no eliminar, solo marcar)
+            if self.mongo_collection is not None:
+                try:
+                    result = await self.mongo_collection.update_many(
+                        {
+                            "ruc": ruc,
+                            "$or": [
+                                {"expires_at": {"$lte": now}},
+                                {"is_active": False}
+                            ]
+                        },
+                        {"$set": {"is_active": False}}
+                    )
+                    cleaned_count += result.modified_count
+                except Exception as e:
+                    logger.warning(f"⚠️ [TOKEN] Error limpiando MongoDB: {e}")
+            
+            if cleaned_count > 0:
+                logger.info(f"🧹 [TOKEN] Limpiados {cleaned_count} tokens expirados para RUC {ruc}")
+            
+        except Exception as e:
+            logger.error(f"❌ [TOKEN] Error en limpieza automática para RUC {ruc}: {e}")
+    
+    async def cleanup_all_expired_tokens(self):
+        """
+        Limpiar todos los tokens expirados del sistema (método de mantenimiento)
+        
+        Returns:
+            int: Cantidad de tokens limpiados
+        """
+        try:
+            now = datetime.utcnow()
+            total_cleaned = 0
+            
+            # 1. Limpiar cache de memoria
+            keys_to_remove = []
+            for session_id, session in self.token_cache.items():
+                if not session.is_active or session.expires_at <= now:
+                    keys_to_remove.append(session_id)
+            
+            for key in keys_to_remove:
+                del self.token_cache[key]
+                total_cleaned += 1
+            
+            # 2. Limpiar Redis globalmente
+            if self.redis_client:
+                try:
+                    keys = await self.redis_client.keys("sire_session_*")
+                    for key in keys:
+                        session_data = await self.redis_client.get(key)
+                        if session_data:
+                            session_dict = json.loads(session_data)
+                            expires_at = datetime.fromisoformat(session_dict.get('expires_at', '1970-01-01'))
+                            
+                            if expires_at <= now:
+                                await self.redis_client.delete(key)
+                                total_cleaned += 1
+                except Exception as e:
+                    logger.warning(f"⚠️ [TOKEN] Error en limpieza global de Redis: {e}")
+            
+            # 3. Marcar como inactivos en MongoDB globalmente
+            if self.mongo_collection is not None:
+                try:
+                    result = await self.mongo_collection.update_many(
+                        {
+                            "$or": [
+                                {"expires_at": {"$lte": now}},
+                                {"is_active": False}
+                            ]
+                        },
+                        {"$set": {"is_active": False}}
+                    )
+                    total_cleaned += result.modified_count
+                except Exception as e:
+                    logger.warning(f"⚠️ [TOKEN] Error en limpieza global de MongoDB: {e}")
+            
+            logger.info(f"🧹 [TOKEN] Limpieza global completada: {total_cleaned} tokens procesados")
+            return total_cleaned
+            
+        except Exception as e:
+            logger.error(f"❌ [TOKEN] Error en limpieza global: {e}")
+            return 0
     
     def _is_token_expiring_soon(self, session: SireSession) -> bool:
         """Verificar si el token expira pronto (CORREGIDO: considerar timezone)"""

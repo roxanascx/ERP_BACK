@@ -1,6 +1,13 @@
 """
 Servicio de autenticación SIRE
-Maneja la autenticación con SUNAT y gestión de sesiones
+Maneja la autenticación con SUNAT y gestión de s        except SireAuthException:
+            # Registrar intento fallido
+            await self._register_failed_attempt(normalized_ruc)
+            raise
+        except Exception as e:
+            await self._register_failed_attempt(normalized_ruc)
+            logger.error(f"❌ [AUTH] Error inesperado en autenticación para RUC {normalized_ruc}: {e}")
+            raise SireAuthException(f"Error inesperado: {str(e)}")
 """
 
 import hashlib
@@ -14,6 +21,7 @@ from ..models.responses import SireStatusResponse
 from ..utils.exceptions import SireAuthException, SireConfigurationException
 from .api_client import SunatApiClient
 from .token_manager import SireTokenManager
+from .credentials_manager import credentials_manager
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +44,28 @@ class SireAuthService:
         self.auth_cache: Dict[str, Dict[str, Any]] = {}
         self.max_auth_attempts = 3
         self.auth_cooldown = 300  # 5 minutos
+    
+    def _normalize_ruc(self, ruc: str) -> str:
+        """
+        Normalizar RUC eliminando espacios y caracteres extra
+        
+        Args:
+            ruc: RUC a normalizar
+            
+        Returns:
+            str: RUC normalizado
+        """
+        if not ruc:
+            return ruc
+            
+        # Limpiar espacios y caracteres especiales
+        normalized = ''.join(c for c in str(ruc).strip() if c.isdigit())
+        
+        # Validar longitud (RUC debe tener 11 dígitos)
+        if len(normalized) != 11:
+            logger.warning(f"⚠️ [AUTH] RUC {ruc} normalizado a {normalized} no tiene 11 dígitos")
+        
+        return normalized
         
     async def authenticate(self, credentials: SireCredentials) -> SireAuthResponse:
         """
@@ -51,19 +81,21 @@ class SireAuthService:
             SireAuthException: Error de autenticación
         """
         try:
-            logger.info(f"🔐 [AUTH] Iniciando autenticación para RUC {credentials.ruc}")
+            # Normalizar RUC antes de cualquier operación
+            normalized_ruc = self._normalize_ruc(credentials.ruc)
+            logger.info(f"🔐 [AUTH] Iniciando autenticación para RUC {normalized_ruc}")
             
             # Validar credenciales
             await self._validate_credentials(credentials)
             
             # Verificar si ya existe una sesión válida
-            existing_token = await self.token_manager.get_valid_token(credentials.ruc)
+            existing_token = await self.token_manager.get_valid_token(normalized_ruc)
             if existing_token:
-                logger.info(f"♻️ [AUTH] Sesión existente válida para RUC {credentials.ruc}")
-                return await self._build_auth_response(existing_token, credentials.ruc, reused=True)
+                logger.info(f"♻️ [AUTH] Sesión existente válida para RUC {normalized_ruc}")
+                return await self._build_auth_response(existing_token, normalized_ruc, reused=True)
             
             # Verificar cooldown de intentos fallidos
-            await self._check_auth_cooldown(credentials.ruc)
+            await self._check_auth_cooldown(normalized_ruc)
             
             # Realizar autenticación con SUNAT
             token_data = await self._authenticate_with_sunat(credentials)
@@ -72,12 +104,12 @@ class SireAuthService:
             session_id = await self._store_authentication_session(credentials, token_data)
             
             # Limpiar historial de intentos fallidos
-            await self._clear_failed_attempts(credentials.ruc)
+            await self._clear_failed_attempts(normalized_ruc)
             
             # Construir respuesta exitosa
-            response = await self._build_auth_response(token_data.access_token, credentials.ruc)
+            response = await self._build_auth_response(token_data.access_token, normalized_ruc)
             
-            logger.info(f"✅ [AUTH] Autenticación exitosa para RUC {credentials.ruc}")
+            logger.info(f"✅ [AUTH] Autenticación exitosa para RUC {normalized_ruc}")
             return response
             
         except SireAuthException:
@@ -247,9 +279,20 @@ class SireAuthService:
                 )
     
     async def _authenticate_with_sunat(self, credentials: SireCredentials) -> SireTokenData:
-        """Realizar autenticación con API SUNAT"""
+        """Realizar autenticación con API SUNAT usando credenciales correctas"""
         try:
-            token_data = await self.api_client.authenticate(credentials)
+            # NUEVO: Usar credenciales del manager que funcionan
+            working_credentials = credentials_manager.get_credentials(credentials.ruc)
+            
+            if working_credentials:
+                logger.info(f"🔑 [AUTH] Usando credenciales verificadas para RUC {credentials.ruc}")
+                # Usar las credenciales que sabemos que funcionan
+                token_data = await self.api_client.authenticate(working_credentials)
+            else:
+                logger.warning(f"⚠️ [AUTH] No hay credenciales verificadas para RUC {credentials.ruc}, usando las proporcionadas")
+                # Usar las credenciales proporcionadas como fallback
+                token_data = await self.api_client.authenticate(credentials)
+            
             return token_data
             
         except Exception as e:

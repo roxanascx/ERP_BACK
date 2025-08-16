@@ -196,7 +196,7 @@ class SunatApiClient:
             "scope": "https://api-sire.sunat.gob.pe",
             "client_id": credentials.client_id,
             "client_secret": credentials.client_secret,
-            "username": credentials.sunat_usuario,  # ✅ SOLO USUARIO (formato confirmado que funciona)
+            "username": f"{credentials.ruc}{credentials.sunat_usuario}",  # ✅ FORMATO CORRECTO: RUC+Usuario SIN ESPACIOS
             "password": credentials.sunat_clave
         }
         
