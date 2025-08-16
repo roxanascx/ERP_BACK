@@ -1551,6 +1551,12 @@ class RvieService:
                     timeout=timeout_segundos
                 )
                 
+                # Log detallado para debugging
+                logger.info(f"🔍 [RVIE] Respuesta completa de SUNAT: {response_data}")
+                logger.info(f"🔍 [RVIE] Tipo de respuesta: {type(response_data)}")
+                if isinstance(response_data, dict):
+                    logger.info(f"🔍 [RVIE] Claves en respuesta: {list(response_data.keys())}")
+                
                 # Verificar si la respuesta es válida
                 if self._es_respuesta_valida(response_data):
                     logger.info(f"✅ [RVIE] Respuesta recibida correctamente en intento {intento}")
@@ -1801,21 +1807,49 @@ class RvieService:
             return False
     
     def _es_respuesta_valida(self, response_data: Dict[str, Any]) -> bool:
-        """Verificar si la respuesta de SUNAT es válida"""
+        """
+        Verificar si la respuesta de SUNAT es válida
+        
+        SUNAT puede devolver diferentes tipos de respuestas:
+        1. Ticket: {"numTicket": "123456"}
+        2. Estado: {"estado": "OK", "mensaje": "..."}
+        3. Datos: {"data": [...]}
+        4. Error: {"error": "...", "codigo": "..."}
+        """
         if not isinstance(response_data, dict):
+            logger.debug(f"🔍 [RVIE] Respuesta no es dict: {type(response_data)}")
             return False
         
-        # Verificar campos mínimos requeridos
-        campos_requeridos = ["estado", "mensaje"]
-        for campo in campos_requeridos:
-            if campo not in response_data:
-                return False
+        # Log para debugging
+        logger.debug(f"🔍 [RVIE] Validando respuesta SUNAT: {list(response_data.keys())}")
         
-        # Verificar que no sea un error
-        if response_data.get("estado") == "ERROR":
+        # Verificar si es un error explícito
+        if response_data.get("error") or response_data.get("estado") == "ERROR":
+            logger.warning(f"⚠️ [RVIE] Respuesta contiene error: {response_data}")
             return False
-            
-        return True
+        
+        # Aceptar respuestas con ticket (descarga de propuesta)
+        if "numTicket" in response_data:
+            logger.debug(f"✅ [RVIE] Respuesta válida - ticket: {response_data.get('numTicket')}")
+            return True
+        
+        # Aceptar respuestas con estado OK
+        if response_data.get("estado") in ["OK", "EXITOSO", "COMPLETADO"]:
+            logger.debug(f"✅ [RVIE] Respuesta válida - estado: {response_data.get('estado')}")
+            return True
+        
+        # Aceptar respuestas con datos
+        if "data" in response_data or "resultado" in response_data:
+            logger.debug(f"✅ [RVIE] Respuesta válida - contiene datos")
+            return True
+        
+        # Aceptar respuestas que no estén vacías
+        if len(response_data) > 0:
+            logger.debug(f"✅ [RVIE] Respuesta válida - contiene datos: {len(response_data)} campos")
+            return True
+        
+        logger.warning(f"⚠️ [RVIE] Respuesta no reconocida como válida: {response_data}")
+        return False
     
     async def _esperar_ticket_propuesta(
         self,
