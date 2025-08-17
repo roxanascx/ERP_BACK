@@ -77,12 +77,20 @@ class FileDownloadResponse(BaseModel):
     file_size: int = Field(..., description="Tamaño del archivo")
     download_url: Optional[str] = Field(None, description="URL de descarga directa")
     
+    # Contenido del archivo (bytes en base64 para serialización JSON)
+    file_content: Optional[bytes] = Field(None, description="Contenido binario del archivo")
+    ticket_id: Optional[str] = Field(None, description="ID del ticket asociado")
+    
     # Metadatos del archivo
-    created_at: datetime = Field(..., description="Fecha de creación")
+    created_at: datetime = Field(default_factory=datetime.now, description="Fecha de creación")
     expires_at: Optional[datetime] = Field(None, description="Fecha de expiración")
     
     # Hash para verificación
     file_hash: Optional[str] = Field(None, description="Hash del archivo para verificación")
+    
+    class Config:
+        # Permitir tipos no estándar como bytes
+        arbitrary_types_allowed = True
 
 
 class SireStatusResponse(BaseModel):
