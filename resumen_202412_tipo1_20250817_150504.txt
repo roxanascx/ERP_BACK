@@ -1,3 +1,0 @@
-Tipo de Documento|Total Documentos|Valor facturado la exportación|Base imponible de la operación gravada|Dscto. de la Base Imponible|Monto Total del IGV|Dscto. del IGV|Importe total de la operación exonerada|Importe total de la operación inafecta|ISC|Base imponible de la operación gravada con el Impuesto a las Ventas del Arroz Pilado|Impuesto a las Ventas del Arroz Pilado|ICBPER|Otros Trib/ Cargos|Total CP
-01-Factura|2|0|0.000|0|0.000|0|1300.000|0|0.000|0|0|0.000|0.000|1300.00
-TOTAL |2|0.00|0.00|0.00|0.00|0.00|1300.00|0.00|0.00|0.00|0.00|0.00|0.00|1300.00

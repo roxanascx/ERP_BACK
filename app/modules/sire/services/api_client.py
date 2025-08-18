@@ -132,10 +132,6 @@ class SunatApiClient:
         json_data = json.dumps(data, default=str) if data else None
         
         try:
-            logger.info(f"🌐 [API] {method} {url}")
-            if data:
-                logger.debug(f"📤 [API] Request data: {json_data}")
-            
             response = await self.client.request(
                 method=method,
                 url=url,
@@ -143,8 +139,6 @@ class SunatApiClient:
                 json=data,
                 params=params
             )
-            
-            logger.info(f"📥 [API] Response: {response.status_code}")
             
             # Verificar si es un error de autenticación
             if response.status_code == 401:
@@ -165,7 +159,6 @@ class SunatApiClient:
             
         except httpx.TimeoutException:
             if retry_count < self.max_retries:
-                logger.warning(f"⏱️ [API] Timeout, reintentando {retry_count + 1}/{self.max_retries}")
                 await asyncio.sleep(self.retry_delay * (retry_count + 1))
                 return await self._make_request(method, url, headers, data, params, token, retry_count + 1)
             else:
@@ -173,7 +166,6 @@ class SunatApiClient:
         
         except httpx.RequestError as e:
             if retry_count < self.max_retries:
-                logger.warning(f"🔄 [API] Error de conexión, reintentando {retry_count + 1}/{self.max_retries}: {e}")
                 await asyncio.sleep(self.retry_delay * (retry_count + 1))
                 return await self._make_request(method, url, headers, data, params, token, retry_count + 1)
             else:
@@ -218,8 +210,6 @@ class SunatApiClient:
                 data=auth_data  # Usar data en lugar de json para form-urlencoded
             )
             
-            logger.info(f"📥 [API] Response: {response.status_code}")
-            
             # Verificar si es un error de autenticación
             if response.status_code == 401:
                 error_details = "Credenciales inválidas"
@@ -242,12 +232,6 @@ class SunatApiClient:
             
             token_data = response.json()
             
-            # DEBUGGING: Log de respuesta de SUNAT
-            logger.info(f"🔍 [DEBUG] Respuesta completa de SUNAT: {token_data}")
-            logger.info(f"🔍 [DEBUG] access_token (50 chars): {token_data.get('access_token', 'N/A')[:50]}...")
-            logger.info(f"🔍 [DEBUG] expires_in: {token_data.get('expires_in', 'N/A')}")
-            logger.info(f"🔍 [DEBUG] token_type: {token_data.get('token_type', 'N/A')}")
-            
             return SireTokenData(
                 access_token=token_data["access_token"],
                 token_type=token_data.get("token_type", "Bearer"),
@@ -257,7 +241,6 @@ class SunatApiClient:
             )
             
         except Exception as e:
-            logger.error(f"❌ [AUTH] Error de autenticación: {e}")
             raise SireAuthException(f"Error de autenticación: {e}")
     
     async def refresh_token(self, refresh_token: str, client_id: str, client_secret: str) -> SireTokenData:
@@ -297,7 +280,6 @@ class SunatApiClient:
             )
             
         except Exception as e:
-            logger.error(f"❌ [AUTH] Error renovando token: {e}")
             raise SireAuthException(f"Error renovando token: {e}")
     
     async def get_with_auth(self, endpoint: str, token: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -394,5 +376,4 @@ class SunatApiClient:
             response = await self._make_request("GET", f"{self.base_url}")
             return response.status_code in [200, 401, 403]  # 401/403 indican que el servidor responde
         except Exception as e:
-            logger.warning(f"⚠️ [API] Health check failed: {str(e)}")
             return False

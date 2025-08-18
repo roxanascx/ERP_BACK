@@ -49,7 +49,6 @@ class SireCredentialsManager:
                 required_fields = ["sunat_usuario", "sunat_clave", "sire_client_id", "sire_client_secret"]
                 
                 if all(empresa.get(field) for field in required_fields):
-                    logger.info(f"✅ [CREDENTIALS] Credenciales encontradas en MongoDB para RUC {ruc}")
                     return SireCredentials(
                         ruc=ruc,
                         sunat_usuario=empresa["sunat_usuario"],
@@ -59,11 +58,10 @@ class SireCredentialsManager:
                     )
                 else:
                     missing_fields = [field for field in required_fields if not empresa.get(field)]
-                    logger.warning(f"⚠️ [CREDENTIALS] RUC {ruc} en MongoDB pero faltan campos: {missing_fields}")
+                    pass  # Faltan campos, continuar con fallback
             
             # Fallback a credenciales hardcoded
             if ruc in self._fallback_credentials:
-                logger.info(f"🔄 [CREDENTIALS] Usando credenciales fallback para RUC {ruc}")
                 cred_data = self._fallback_credentials[ruc]
                 
                 return SireCredentials(
@@ -74,11 +72,9 @@ class SireCredentialsManager:
                     client_secret=cred_data["sire_client_secret"]
                 )
             
-            logger.warning(f"❌ [CREDENTIALS] No se encontraron credenciales para RUC {ruc}")
             return None
             
         except Exception as e:
-            logger.error(f"❌ [CREDENTIALS] Error obteniendo credenciales para RUC {ruc}: {e}")
             return None
     
     def get_credentials_sync(self, ruc: str) -> Optional[SireCredentials]:

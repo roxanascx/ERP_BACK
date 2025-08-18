@@ -57,7 +57,7 @@ class SireTicketService:
         
         # Validar longitud (RUC debe tener 11 dígitos)
         if len(normalized) != 11:
-            self.logger.warning(f"⚠️ [TICKET] RUC {ruc} normalizado a {normalized} no tiene 11 dígitos")
+            pass  # RUC no tiene 11 dígitos
         
         return normalized
     
@@ -108,17 +108,7 @@ class SireTicketService:
                 ticket.status_message = f"Ticket creado en SUNAT: {sunat_response.mensaje}"
                 
             except Exception as sunat_error:
-                self.logger.warning(f"Error creando ticket en SUNAT: {sunat_error}")
-                
-                # Fallback: crear ticket local para testing
-                ticket = SireTicket.create_new(
-                    ruc=ruc,
-                    operation_type=operation_type,
-                    operation_params=operation_params,
-                    priority=priority,
-                    user_id=user_id
-                )
-                ticket.status_message = f"Ticket en modo testing (SUNAT no disponible)"
+                raise ValueError(f"Error creando ticket en SUNAT: {sunat_error}")
             
             # Calcular duración estimada
             ticket.estimated_duration = self._estimate_duration(operation_type, operation_params)
@@ -129,12 +119,9 @@ class SireTicketService:
             # Programar ejecución asíncrona
             asyncio.create_task(self._process_ticket_async(ticket.ticket_id))
             
-            self.logger.info(f"Ticket creado: {ticket.ticket_id} para operación {operation_type.value}")
-            
             return TicketResponse.from_ticket(ticket)
             
         except Exception as e:
-            self.logger.error(f"Error creando ticket: {e}")
             raise
     
     async def create_rvie_download_ticket(self, 
@@ -258,7 +245,6 @@ class SireTicketService:
                 raise ValueError(f"Error SUNAT: {error_data.get('mensaje', 'Error desconocido')}")
                 
         except Exception as e:
-            self.logger.error(f"Error comunicándose con SUNAT: {e}")
             raise
     
     def _get_sunat_endpoint(self, operation: SunatOperationType) -> str:
@@ -284,7 +270,6 @@ class SireTicketService:
             # Obtener sesión activa
             session = await self.token_manager.get_active_session(ticket.ruc)
             if not session:
-                self.logger.warning(f"No hay sesión activa para sincronizar ticket {ticket_id}")
                 return False
             
             # Consultar estado en SUNAT
@@ -328,7 +313,6 @@ class SireTicketService:
             return True
             
         except Exception as e:
-            self.logger.error(f"Error sincronizando con SUNAT ticket {ticket_id}: {e}")
             return False
     
     async def _query_sunat_ticket_status(self, ticket_id: str, access_token: str) -> SunatTicketStatusResponse:
@@ -350,7 +334,6 @@ class SireTicketService:
                 raise ValueError(f"Error consultando ticket en SUNAT: {response.status_code}")
                 
         except Exception as e:
-            self.logger.error(f"Error consultando estado en SUNAT: {e}")
             raise
     
     def _map_sunat_status(self, sunat_status: SunatTicketStatus) -> TicketStatus:
@@ -387,7 +370,6 @@ class SireTicketService:
             return TicketResponse.from_ticket(ticket)
             
         except Exception as e:
-            self.logger.error(f"Error obteniendo ticket {ticket_id}: {e}")
             return None
     
     async def get_tickets_by_ruc(self, 
@@ -399,7 +381,6 @@ class SireTicketService:
         try:
             return await self.ticket_repo.get_tickets_by_ruc(ruc, limit, offset, status_filter)
         except Exception as e:
-            self.logger.error(f"Error obteniendo tickets para RUC {ruc}: {e}")
             return []
     
     async def get_ticket_stats(self, ruc: Optional[str] = None) -> Dict[str, Any]:
@@ -411,12 +392,9 @@ class SireTicketService:
     async def _process_ticket_async(self, ticket_id: str):
         """Procesar un ticket de forma asíncrona"""
         try:
-            self.logger.info(f"Iniciando procesamiento asíncrono de ticket: {ticket_id}")
-            
             # Obtener el ticket
             ticket = await self.ticket_repo.get_ticket(ticket_id)
             if not ticket:
-                self.logger.error(f"Ticket no encontrado: {ticket_id}")
                 return
             
             # Verificar que no esté expirado
@@ -457,7 +435,6 @@ class SireTicketService:
                 )
             
         except Exception as e:
-            self.logger.error(f"Error procesando ticket {ticket_id}: {e}")
             await self.ticket_repo.set_ticket_error(
                 ticket_id,
                 "PROCESSING_ERROR",
@@ -467,8 +444,6 @@ class SireTicketService:
     async def _process_rvie_download(self, ticket: SireTicket):
         """Procesar descarga de propuesta RVIE"""
         try:
-            self.logger.info(f"Procesando descarga RVIE para ticket: {ticket.ticket_id}")
-            
             # Obtener parámetros
             ruc = ticket.operation_params.get('ruc')
             periodo = ticket.operation_params.get('periodo')
@@ -489,9 +464,6 @@ class SireTicketService:
                 25.0
             )
             
-            # Simular delay de procesamiento real
-            await asyncio.sleep(2)
-            
             # Actualizar progreso
             await self.ticket_repo.update_ticket_status(
                 ticket.ticket_id,
@@ -509,15 +481,23 @@ class SireTicketService:
                     # Procesar archivo de respuesta
                     await self._save_rvie_file(ticket, response.get('data', ''))
                 else:
-                    # Si falla, usar datos simulados para testing
-                    await self._save_rvie_mock_file(ticket, ruc, periodo)
+                    # Si no hay respuesta válida, marcar como error
+                    await self.ticket_repo.set_ticket_error(
+                        ticket.ticket_id,
+                        "SUNAT_NO_DATA",
+                        "SUNAT no devolvió datos válidos"
+                    )
+                    return
                 
             except Exception as e:
-                self.logger.warning(f"SUNAT API falló, usando datos simulados: {e}")
-                await self._save_rvie_mock_file(ticket, ruc, periodo)
+                await self.ticket_repo.set_ticket_error(
+                    ticket.ticket_id,
+                    "SUNAT_CONNECTION_ERROR",
+                    f"Error conectando con SUNAT: {str(e)}"
+                )
+                return
             
         except Exception as e:
-            self.logger.error(f"Error en descarga RVIE: {e}")
             await self.ticket_repo.set_ticket_error(
                 ticket.ticket_id,
                 "RVIE_DOWNLOAD_ERROR",
@@ -550,89 +530,7 @@ class SireTicketService:
                 "txt",
                 file_hash
             )
-            
-            self.logger.info(f"Archivo RVIE guardado: {file_name} ({file_size} bytes)")
-            
         except Exception as e:
-            self.logger.error(f"Error guardando archivo RVIE: {e}")
-            raise
-    
-    async def _save_rvie_mock_file(self, ticket: SireTicket, ruc: str, periodo: str):
-        """Guardar archivo RVIE simulado"""
-        try:
-            # Actualizar progreso
-            await self.ticket_repo.update_ticket_status(
-                ticket.ticket_id,
-                TicketStatus.PROCESANDO,
-                "Generando archivo simulado...",
-                75.0
-            )
-            
-            # Generar contenido simulado
-            mock_content = f"""RUC|PERIODO|ESTADO|FECHA_GENERACION
-{ruc}|{periodo}|PROPUESTA_DISPONIBLE|{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
-
-DETALLE DE PROPUESTA RVIE - SIMULADO
-====================================
-
-RUC del Contribuyente: {ruc}
-Período: {periodo}
-Estado: Propuesta Disponible para Descarga
-Fecha de Generación: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
-
-RESUMEN:
-- Total de registros procesados: 150
-- Registros válidos: 145
-- Registros con observaciones: 5
-- Registros rechazados: 0
-
-OBSERVACIONES:
-- Se encontraron 5 registros con datos faltantes en el campo fecha
-- Se recomienda revisar antes de la aceptación final
-
-NOTA: Este es un archivo simulado para pruebas del sistema.
-Para obtener datos reales, asegurar conectividad con SUNAT.
-"""
-            
-            # Simular tiempo de procesamiento
-            await asyncio.sleep(1)
-            
-            # Generar nombre de archivo
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            file_name = f"RVIE_SIMULADO_{ruc}_{periodo}_{timestamp}.txt"
-            file_path = os.path.join(self.file_storage_path, file_name)
-            
-            # Guardar archivo
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(mock_content)
-            
-            # Calcular hash y tamaño
-            file_size = os.path.getsize(file_path)
-            file_hash = self._calculate_file_hash(file_path)
-            
-            # Actualizar progreso final
-            await self.ticket_repo.update_ticket_status(
-                ticket.ticket_id,
-                TicketStatus.PROCESANDO,
-                "Finalizando...",
-                95.0
-            )
-            
-            await asyncio.sleep(0.5)
-            
-            # Marcar como completado
-            await self.ticket_repo.set_ticket_completed(
-                ticket.ticket_id,
-                file_name,
-                file_size,
-                "txt",
-                file_hash
-            )
-            
-            self.logger.info(f"Archivo RVIE simulado guardado: {file_name} ({file_size} bytes)")
-            
-        except Exception as e:
-            self.logger.error(f"Error guardando archivo RVIE simulado: {e}")
             raise
     
     async def _process_rvie_accept(self, ticket: SireTicket):
@@ -641,7 +539,7 @@ Para obtener datos reales, asegurar conectividad con SUNAT.
             ruc = ticket.operation_params.get('ruc')
             periodo = ticket.operation_params.get('periodo')
             
-            # Simular proceso de aceptación
+            # Validar propuesta con SUNAT antes de aceptar
             await self.ticket_repo.update_ticket_status(
                 ticket.ticket_id,
                 TicketStatus.PROCESANDO,
@@ -649,8 +547,7 @@ Para obtener datos reales, asegurar conectividad con SUNAT.
                 30.0
             )
             
-            await asyncio.sleep(2)
-            
+            # Enviar aceptación a SUNAT
             await self.ticket_repo.update_ticket_status(
                 ticket.ticket_id,
                 TicketStatus.PROCESANDO,
@@ -658,34 +555,44 @@ Para obtener datos reales, asegurar conectividad con SUNAT.
                 70.0
             )
             
-            await asyncio.sleep(3)
+            # Llamar al servicio RVIE para aceptar
+            response = await self.rvie_service.aceptar_propuesta(ruc, periodo)
             
-            # Generar archivo de confirmación
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            file_name = f"RVIE_ACEPTACION_{ruc}_{periodo}_{timestamp}.txt"
-            file_path = os.path.join(self.file_storage_path, file_name)
+            if not response or not response.get('success'):
+                await self.ticket_repo.set_ticket_error(
+                    ticket.ticket_id,
+                    "RVIE_ACCEPT_FAILED",
+                    "SUNAT rechazó la aceptación de propuesta"
+                )
+                return
             
-            content = f"""CONFIRMACIÓN DE ACEPTACIÓN - RVIE
-RUC: {ruc}
-Período: {periodo}
-Fecha de Aceptación: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
-Estado: ACEPTADO
-Número de Confirmación: AC{timestamp}{ruc[-4:]}
-"""
-            
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            
-            file_size = os.path.getsize(file_path)
-            file_hash = self._calculate_file_hash(file_path)
-            
-            await self.ticket_repo.set_ticket_completed(
-                ticket.ticket_id,
-                file_name,
-                file_size,
-                "txt",
-                file_hash
-            )
+            # Procesar respuesta de aceptación
+            confirmation_data = response.get('data', '')
+            if confirmation_data:
+                # Guardar archivo de confirmación
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                file_name = f"RVIE_ACEPTACION_{ruc}_{periodo}_{timestamp}.txt"
+                file_path = os.path.join(self.file_storage_path, file_name)
+                
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(confirmation_data)
+                
+                file_size = os.path.getsize(file_path)
+                file_hash = self._calculate_file_hash(file_path)
+                
+                await self.ticket_repo.set_ticket_completed(
+                    ticket.ticket_id,
+                    file_name,
+                    file_size,
+                    "txt",
+                    file_hash
+                )
+            else:
+                await self.ticket_repo.set_ticket_error(
+                    ticket.ticket_id,
+                    "NO_CONFIRMATION_DATA",
+                    "SUNAT no devolvió datos de confirmación"
+                )
             
         except Exception as e:
             await self.ticket_repo.set_ticket_error(
@@ -745,7 +652,6 @@ Número de Confirmación: AC{timestamp}{ruc[-4:]}
             file_path = os.path.join(self.file_storage_path, ticket.output_file_name)
             
             if not os.path.exists(file_path):
-                self.logger.error(f"Archivo no encontrado: {file_path}")
                 return None, None
             
             with open(file_path, 'rb') as f:
@@ -754,7 +660,6 @@ Número de Confirmación: AC{timestamp}{ruc[-4:]}
             return ticket.output_file_name, file_content
             
         except Exception as e:
-            self.logger.error(f"Error descargando archivo de ticket {ticket_id}: {e}")
             return None, None
     
     def _calculate_file_hash(self, file_path: str) -> str:
@@ -799,10 +704,8 @@ Número de Confirmación: AC{timestamp}{ruc[-4:]}
                     if file_time < cutoff_date:
                         os.remove(file_path)
                         deleted_count += 1
-                        self.logger.info(f"Archivo eliminado: {file_name}")
             
             return deleted_count
             
         except Exception as e:
-            self.logger.error(f"Error limpiando archivos antiguos: {e}")
             return 0

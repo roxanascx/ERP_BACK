@@ -3,7 +3,6 @@ Servicio para Gestión de Ventas RVIE - Versión Oficial
 Consulta directa a SUNAT usando únicamente endpoints del manual oficial v25
 """
 
-import logging
 import asyncio
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -13,8 +12,6 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from .auth_service import SireAuthService
 from .api_client import SunatApiClient
 from .token_manager import SireTokenManager
-
-logger = logging.getLogger(__name__)
 
 class RvieVentasService:
     """Servicio para gestión de ventas RVIE usando únicamente endpoints oficiales del manual SUNAT v25"""
@@ -48,12 +45,9 @@ class RvieVentasService:
         URL oficial: /v1/contribuyente/migeigv/libros/rvie/propuesta/web/propuesta/{perTributario}/exportapropuesta
         """
         try:
-            logger.info(f"📄 Descargando propuesta RVIE oficial para RUC {ruc}, periodo {periodo}")
-            
             # Obtener token válido usando el servicio oficial
             token = await self.token_manager.get_valid_token(ruc)
             if not token:
-                logger.warning(f"No hay token válido para RUC {ruc}, intentando autenticar...")
                 # Si no hay token, intentar obtener credenciales y autenticar
                 # (esto requeriría implementar get_credentials o usar las predeterminadas)
                 raise Exception("No se pudo obtener token válido. Requiere autenticación previa.")
@@ -92,9 +86,6 @@ class RvieVentasService:
                 "Accept": "application/json"
             }
             
-            logger.info(f"🌐 Consultando URL oficial: {url}")
-            logger.info(f"📋 Parámetros: {params}")
-            
             # Realizar consulta con reintento en caso de 401
             max_intentos = 2
             for intento in range(max_intentos):
@@ -102,7 +93,6 @@ class RvieVentasService:
                     timeout = aiohttp.ClientTimeout(total=30)
                     async with aiohttp.ClientSession(timeout=timeout) as session:
                         async with session.get(url, headers=headers, params=params) as response:
-                            logger.info(f"📡 Respuesta SUNAT: {response.status} (intento {intento + 1})")
                             
                             if response.status == 200:
                                 # Respuesta exitosa
@@ -111,7 +101,6 @@ class RvieVentasService:
                                 if 'application/json' in content_type:
                                     # El servicio retorna un ticket para descargar después
                                     data = await response.json()
-                                    logger.info(f"✅ Ticket recibido: {data}")
                                     return {
                                         "tipo": "ticket",
                                         "ticket": data,
@@ -120,7 +109,6 @@ class RvieVentasService:
                                 else:
                                     # Contenido directo (texto/csv/excel)
                                     contenido = await response.text()
-                                    logger.info(f"✅ Contenido directo recibido: {len(contenido)} caracteres")
                                     
                                     # Procesar el contenido
                                     comprobantes = self._procesar_contenido_txt(contenido)
@@ -134,7 +122,6 @@ class RvieVentasService:
                                     }
                             
                             elif response.status == 401:
-                                logger.warning(f"⚠️ Token expirado (401), requiere renovación... (intento {intento + 1})")
                                 if intento < max_intentos - 1:
                                     # Invalidar token actual
                                     await self.token_manager.revoke_token(ruc)
@@ -147,15 +134,12 @@ class RvieVentasService:
                                 # Error de respuesta
                                 try:
                                     error_json = await response.json()
-                                    logger.error(f"❌ Error SUNAT {response.status}: {error_json}")
                                     raise Exception(f"Error SUNAT {response.status}: {error_json}")
                                 except:
                                     error_text = await response.text()
-                                    logger.error(f"❌ Error SUNAT {response.status}: {error_text}")
                                     raise Exception(f"Error SUNAT {response.status}: {error_text}")
                 
                 except aiohttp.ClientError as e:
-                    logger.error(f"❌ Error de conexión (intento {intento + 1}): {str(e)}")
                     if intento < max_intentos - 1:
                         await asyncio.sleep(2)
                         continue
@@ -165,7 +149,6 @@ class RvieVentasService:
             raise Exception("Se agotaron todos los intentos de consulta")
         
         except Exception as e:
-            logger.error(f"❌ Error en descargar_propuesta: {str(e)}")
             raise e
     
     async def obtener_comprobantes(
@@ -183,33 +166,15 @@ class RvieVentasService:
         Este es el endpoint que funciona en tu script explorador_comprobantes.py
         """
         try:
-            logger.info(f"📄 Obteniendo comprobantes RVIE para RUC {ruc}, periodo {periodo}")
-            
-            # 🔍 LOG DETALLADO: Verificar estado del token manager
-            logger.info(f"🔧 [DEBUG] Token manager inicializado: {self.token_manager is not None}")
-            logger.info(f"🔧 [DEBUG] MongoDB collection: {self.token_manager.mongo_collection is not None}")
-            
             # Obtener token válido
-            logger.info(f"🔑 [DEBUG] Solicitando token válido para RUC {ruc}...")
             token = await self.token_manager.get_valid_token(ruc)
             
             if not token:
-                logger.warning(f"❌ [DEBUG] No hay token válido para RUC {ruc}")
-                logger.info(f"🔄 [DEBUG] Intentando usar método alternativo get_active_session_token...")
-                
                 # Intentar método alternativo
                 token = await self.token_manager.get_active_session_token(ruc)
                 
                 if not token:
-                    logger.error(f"❌ [DEBUG] Tampoco hay sesión activa para RUC {ruc}")
                     raise Exception("No se pudo obtener token válido. Requiere autenticación previa.")
-                else:
-                    logger.info(f"✅ [DEBUG] Token obtenido via sesión activa")
-            else:
-                logger.info(f"✅ [DEBUG] Token obtenido via get_valid_token")
-            
-            # Log del token (solo primeros caracteres por seguridad)
-            logger.info(f"🔑 [DEBUG] Token obtenido: {token[:50]}... (longitud: {len(token)})")
             
             # URL que funciona según tu script
             url_base = "https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rvie/propuesta/web/propuesta"
@@ -232,10 +197,6 @@ class RvieVentasService:
                 "Content-Type": "application/json"
             }
             
-            logger.info(f"🌐 Consultando URL: {url}")
-            logger.info(f"📋 Parámetros: {params}")
-            logger.info(f"🔑 [DEBUG] Headers Authorization: Bearer {token[:50]}...")
-            
             # Realizar consulta
             timeout = aiohttp.ClientTimeout(total=30)
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -245,24 +206,13 @@ class RvieVentasService:
                     if response.status == 200:
                         try:
                             data = await response.json()
-                            logger.info(f"✅ Comprobantes obtenidos exitosamente")
-                            
-                            # Log de información de respuesta
-                            if 'paginacion' in data:
-                                pag = data['paginacion']
-                                logger.info(f"📑 Página {pag.get('page', 'N/A')} de {pag.get('totalRegistros', 'N/A')} registros")
-                            
-                            if 'registros' in data:
-                                logger.info(f"📊 {len(data['registros'])} comprobantes en esta página")
                             
                             return data
                             
                         except Exception as e:
-                            logger.error(f"❌ Error procesando respuesta JSON: {e}")
                             return {"error": "Error procesando respuesta", "raw_response": response_text}
                     
                     else:
-                        logger.error(f"❌ Error {response.status}: {response_text}")
                         return {
                             "error": f"Error HTTP {response.status}",
                             "details": response_text,
@@ -271,7 +221,6 @@ class RvieVentasService:
                         }
             
         except Exception as e:
-            logger.error(f"❌ Error en obtener_comprobantes: {str(e)}")
             raise e
 
     def _procesar_contenido_txt(self, contenido: str) -> List[Dict[str, Any]]:
@@ -279,8 +228,6 @@ class RvieVentasService:
         try:
             comprobantes = []
             lineas = contenido.strip().split('\n')
-            
-            logger.info(f"📋 Procesando {len(lineas)} líneas de contenido")
             
             for i, linea in enumerate(lineas):
                 if not linea.strip():
@@ -305,17 +252,14 @@ class RvieVentasService:
                         }
                         comprobantes.append(comprobante)
                     else:
-                        logger.warning(f"⚠️ Línea {i + 1} con formato incompleto: {len(campos)} campos")
+                        continue
                         
                 except Exception as e:
-                    logger.warning(f"⚠️ Error procesando línea {i + 1}: {e}")
                     continue
             
-            logger.info(f"✅ Procesados {len(comprobantes)} comprobantes válidos")
             return comprobantes
             
         except Exception as e:
-            logger.error(f"❌ Error procesando contenido TXT: {e}")
             return []
 
     def _generar_resumen(self, comprobantes: List[Dict[str, Any]]) -> Dict[str, Any]:

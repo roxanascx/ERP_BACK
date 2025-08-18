@@ -63,7 +63,7 @@ class SireAuthService:
         
         # Validar longitud (RUC debe tener 11 dígitos)
         if len(normalized) != 11:
-            logger.warning(f"⚠️ [AUTH] RUC {ruc} normalizado a {normalized} no tiene 11 dígitos")
+            pass  # RUC no tiene 11 dígitos, pero continuamos
         
         return normalized
         
@@ -83,7 +83,6 @@ class SireAuthService:
         try:
             # Normalizar RUC antes de cualquier operación
             normalized_ruc = self._normalize_ruc(credentials.ruc)
-            logger.info(f"🔐 [AUTH] Iniciando autenticación para RUC {normalized_ruc}")
             
             # Validar credenciales
             await self._validate_credentials(credentials)
@@ -91,7 +90,6 @@ class SireAuthService:
             # Verificar si ya existe una sesión válida
             existing_token = await self.token_manager.get_valid_token(normalized_ruc)
             if existing_token:
-                logger.info(f"♻️ [AUTH] Sesión existente válida para RUC {normalized_ruc}")
                 return await self._build_auth_response(existing_token, normalized_ruc, reused=True)
             
             # Verificar cooldown de intentos fallidos
@@ -109,7 +107,6 @@ class SireAuthService:
             # Construir respuesta exitosa
             response = await self._build_auth_response(token_data.access_token, normalized_ruc)
             
-            logger.info(f"✅ [AUTH] Autenticación exitosa para RUC {normalized_ruc}")
             return response
             
         except SireAuthException:
@@ -118,7 +115,6 @@ class SireAuthService:
             raise
         except Exception as e:
             await self._register_failed_attempt(credentials.ruc)
-            logger.error(f"❌ [AUTH] Error inesperado en autenticación para RUC {credentials.ruc}: {e}")
             raise SireAuthException(f"Error interno de autenticación: {e}")
     
     async def refresh_authentication(self, ruc: str, refresh_token: str) -> SireAuthResponse:
@@ -133,14 +129,11 @@ class SireAuthService:
             SireAuthResponse: Nueva respuesta de autenticación
         """
         try:
-            logger.info(f"🔄 [AUTH] Renovando autenticación para RUC {ruc}")
-            
             # TODO: Implementar renovación con refresh token
             # Por ahora, requerimos nueva autenticación completa
             raise SireAuthException("Renovación automática no disponible, reautentique")
             
         except Exception as e:
-            logger.error(f"❌ [AUTH] Error renovando autenticación para RUC {ruc}: {e}")
             raise SireAuthException(f"Error renovando autenticación: {e}")
     
     async def logout(self, ruc: str) -> bool:
@@ -154,19 +147,15 @@ class SireAuthService:
             bool: True si se cerró sesión exitosamente
         """
         try:
-            logger.info(f"🚪 [AUTH] Cerrando sesión para RUC {ruc}")
-            
             # Revocar todos los tokens activos
             revoked = await self.token_manager.revoke_token(ruc)
             
             # Limpiar cache de autenticación
             self.auth_cache.pop(ruc, None)
             
-            logger.info(f"✅ [AUTH] Sesión cerrada para RUC {ruc}")
             return revoked
             
         except Exception as e:
-            logger.error(f"❌ [AUTH] Error cerrando sesión para RUC {ruc}: {e}")
             return False
     
     async def validate_session(self, ruc: str) -> bool:
@@ -231,7 +220,6 @@ class SireAuthService:
             )
             
         except Exception as e:
-            logger.error(f"❌ [AUTH] Error obteniendo estado para RUC {ruc}: {e}")
             return SireStatusResponse(
                 ruc=ruc,
                 sire_activo=False,
@@ -285,19 +273,15 @@ class SireAuthService:
             working_credentials = await credentials_manager.get_credentials(credentials.ruc)
             
             if working_credentials:
-                logger.info(f"🔑 [AUTH] Usando credenciales verificadas desde MongoDB para RUC {credentials.ruc}")
                 # Usar las credenciales que sabemos que funcionan
                 token_data = await self.api_client.authenticate(working_credentials)
             else:
-                logger.warning(f"⚠️ [AUTH] No hay credenciales verificadas para RUC {credentials.ruc}, usando las proporcionadas")
                 # Usar las credenciales proporcionadas como fallback
                 token_data = await self.api_client.authenticate(credentials)
             
             return token_data
             
         except Exception as e:
-            logger.error(f"❌ [AUTH] Error en autenticación SUNAT: {e}")
-            
             # Mapear errores comunes
             if "401" in str(e) or "unauthorized" in str(e).lower():
                 raise SireAuthException("Credenciales incorrectas")
@@ -334,8 +318,6 @@ class SireAuthService:
         
         self.auth_cache[ruc]["failed_attempts"] = self.auth_cache[ruc].get("failed_attempts", 0) + 1
         self.auth_cache[ruc]["last_failed_attempt"] = datetime.utcnow()
-        
-        logger.warning(f"⚠️ [AUTH] Intento fallido {self.auth_cache[ruc]['failed_attempts']} para RUC {ruc}")
     
     async def _clear_failed_attempts(self, ruc: str):
         """Limpiar historial de intentos fallidos"""

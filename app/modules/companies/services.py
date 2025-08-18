@@ -92,22 +92,15 @@ class CompanyService:
     ) -> CompanyListResponse:
         """Listar empresas con metadatos"""
         try:
-            print(f"🔧 [SERVICE] list_companies iniciado")
             companies = await self.repository.list_companies(skip, limit, activas_only, con_sire_only)
-            print(f"📊 [SERVICE] Empresas obtenidas: {len(companies)}")
             
             total = await self.repository.count_companies(activas_only, con_sire_only)
-            print(f"📊 [SERVICE] Total count: {total}")
             
             total_con_sire = await self.repository.count_companies(activas_only=False, con_sire_only=True)
-            print(f"📊 [SERVICE] Total con SIRE: {total_con_sire}")
             
-            print(f"🏗️  [SERVICE] Creando summaries...")
             company_summaries = []
             for i, company in enumerate(companies):
                 try:
-                    print(f"  📝 [SERVICE] Procesando empresa {i+1}: {company.ruc}")
-                    
                     # Sanitizar datos corruptos
                     sire_activo = company.sire_activo
                     if isinstance(sire_activo, str):
@@ -128,24 +121,19 @@ class CompanyService:
                         notas_internas=getattr(company, 'notas_internas', None)
                     )
                     company_summaries.append(summary)
-                    print(f"  ✅ [SERVICE] Empresa {company.ruc} procesada exitosamente")
                 except Exception as e:
-                    print(f"  ❌ [SERVICE] Error procesando empresa {company.ruc}: {type(e).__name__}: {str(e)}")
                     # Continuar con la siguiente empresa en lugar de fallar todo
                     continue
             
-            print(f"🏁 [SERVICE] Creando respuesta final...")
             result = CompanyListResponse(
                 companies=company_summaries,
                 total=total,
                 total_con_sire=total_con_sire,
                 empresa_actual=self.empresa_actual.ruc if self.empresa_actual else None
             )
-            print(f"✅ [SERVICE] list_companies completado exitosamente")
             return result
             
         except Exception as e:
-            print(f"❌ [SERVICE] Error en list_companies: {type(e).__name__}: {str(e)}")
             raise
     
     async def search_companies(self, query: str, limit: int = 10) -> List[CompanySummaryResponse]:
@@ -213,8 +201,6 @@ class CompanyService:
     
     async def configure_sire(self, ruc: str, sire_config: SireConfigRequest) -> Optional[SireInfoResponse]:
         """Configurar credenciales SIRE para una empresa"""
-        print(f"🔧 [SERVICE] configure_sire llamado con RUC: {ruc}")
-        print(f"📋 [SERVICE] Datos del config: {sire_config.dict()}")
         
         try:
             company = await self.repository.configure_sire(
@@ -224,7 +210,6 @@ class CompanyService:
                 sunat_usuario=sire_config.sunat_usuario,
                 sunat_clave=sire_config.sunat_clave
             )
-            print(f"🏢 [SERVICE] Resultado del repository: {company is not None}")
             
             if company:
                 # Actualizar empresa actual si es la misma
@@ -240,14 +225,11 @@ class CompanyService:
                     sunat_usuario=company.sunat_usuario,
                     fecha_actualizacion=company.fecha_actualizacion
                 )
-                print(f"✅ [SERVICE] Respuesta generada exitosamente")
                 return response
                 
-            print(f"❌ [SERVICE] No se pudo configurar SIRE - company es None")
             return None
             
         except Exception as e:
-            print(f"❌ [SERVICE] Error en configure_sire: {type(e).__name__}: {str(e)}")
             raise
     
     async def get_sire_credentials(self, ruc: str, method: SireMethod = SireMethod.ORIGINAL) -> Optional[SireCredentialsResponse]:
