@@ -848,6 +848,7 @@ async def listar_tickets(
     ruc: str,
     limit: int = 50,
     skip: int = 0,
+    incluir_todos: bool = False,
     company: CompanyModel = Depends(validate_ruc_access),
     rvie_service: RvieService = Depends(get_rvie_service)
 ):
@@ -855,15 +856,19 @@ async def listar_tickets(
     Listar todos los tickets RVIE de un RUC
     
     Obtiene la lista de todos los tickets generados para el RUC especificado.
+    
+    Args:
+        incluir_todos: Si es True, incluye tickets SYNC sin archivo. Por defecto False.
     """
     try:
-        logger.info(f"Listando tickets RVIE para RUC {ruc} (skip={skip}, limit={limit})")
+        logger.info(f"Listando tickets RVIE para RUC {ruc} (skip={skip}, limit={limit}, incluir_todos={incluir_todos})")
         
         # Obtener tickets desde la base de datos
         tickets = await rvie_service.listar_tickets_por_ruc(
             ruc=ruc,
             limit=limit,
-            skip=skip
+            skip=skip,
+            incluir_todos=incluir_todos
         )
         
         logger.info(f"Tickets RVIE encontrados: {len(tickets)} para RUC {ruc}")

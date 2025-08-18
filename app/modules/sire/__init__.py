@@ -1,18 +1,24 @@
 """
 Módulo SIRE - Sistema Integrado de Registros Electrónicos
-Integración con API SUNAT para RVIE y RCE
+Integración con API SUNAT para RVIE y RCE - Solo servicios oficiales
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __author__ = "ERP Team"
 
-# Importaciones principales del módulo (solo los implementados)
+# Importaciones principales del módulo - Solo servicios oficiales del manual SUNAT
 from .services.auth_service import SireAuthService
-from .services.api_client import SunatApiClient
+from .services.rvie_ventas_service import RvieVentasService
 from .services.token_manager import SireTokenManager
+from .services.api_client import SunatApiClient
+
+# Importar las rutas oficiales
+from .routes.rvie_ventas_routes import router as rvie_ventas_router
 
 __all__ = [
     "SireAuthService",
+    "RvieVentasService", 
+    "SireTokenManager",
     "SunatApiClient",
-    "SireTokenManager"
+    "rvie_ventas_router"
 ]

@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from ..modules.companies import routes as company_routes
 from ..modules.sire.routes import auth as sire_auth_routes
 from ..modules.sire.routes import rvie_routes as sire_rvie_routes
+from ..modules.sire.routes import rvie_ventas_routes as sire_rvie_ventas_routes
 from ..modules.sire.routes import maintenance as sire_maintenance_routes
 from ..modules.sire.routes import auto_auth as sire_auto_auth_routes
 
@@ -27,6 +28,13 @@ api_router.include_router(
     sire_rvie_routes.router,
     prefix="/sire/rvie",
     tags=["SIRE-RVIE"]
+)
+
+# Incluir rutas del módulo SIRE - RVIE Ventas
+api_router.include_router(
+    sire_rvie_ventas_routes.router,
+    prefix="/sire/rvie/ventas",
+    tags=["SIRE-RVIE-Ventas"]
 )
 
 # Incluir rutas del módulo SIRE - Mantenimiento
