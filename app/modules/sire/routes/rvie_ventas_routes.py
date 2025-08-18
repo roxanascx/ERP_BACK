@@ -36,7 +36,10 @@ async def test_auth(
         
         # Usar el servicio oficial
         api_client = SunatApiClient()
-        token_manager = SireTokenManager(db)
+        # ✅ CORREGIDO: Pasar la colección específica, no toda la base de datos
+        token_manager = SireTokenManager(
+            mongo_collection=db.sire_sessions if db is not None else None
+        )
         auth_service = SireAuthService(api_client, token_manager)
         
         # Verificar si hay token válido
@@ -113,36 +116,46 @@ async def descargar_propuesta(
 
 @router.get(
     "/comprobantes/{ruc}/{periodo}",
-    summary="Endpoint de compatibilidad - usa propuesta oficial internamente"
+    summary="Obtener comprobantes de la propuesta - URL que funciona"
 )
 async def get_comprobantes_ventas(
     ruc: str,
     periodo: str,
+    page: int = Query(1, description="Número de página"),
+    per_page: int = Query(99, description="Elementos por página"),
+    tipo_resumen: Optional[int] = Query(None, description="Tipo de resumen (ignorado por ahora)"),
     rvie_service: RvieVentasService = Depends(get_rvie_service)
 ) -> Dict[str, Any]:
     """
-    Endpoint de compatibilidad que mantiene la URL anterior pero usa el servicio oficial
-    Internamente llama al endpoint oficial 5.18 Descargar propuesta
+    Endpoint que usa la URL que funciona en tu script explorador_comprobantes.py
+    URL: /v1/contribuyente/migeigv/libros/rvie/propuesta/web/propuesta/{periodo}/comprobantes
     """
     try:
         logger.info(f"📊 Obteniendo comprobantes ventas para RUC {ruc}, periodo {periodo}")
         
-        # Usar el endpoint oficial internamente
-        resultado = await rvie_service.descargar_propuesta(
+        # Usar la nueva función que usa el endpoint correcto
+        resultado = await rvie_service.obtener_comprobantes(
             ruc=ruc,
             periodo=periodo,
-            cod_tipo_archivo=0  # Default: txt
+            page=page,
+            per_page=per_page
         )
         
         return {
             "success": True,
             "data": resultado,
-            "mensaje": "Comprobantes obtenidos exitosamente"
+            "mensaje": "Comprobantes obtenidos exitosamente",
+            "meta": {
+                "ruc": ruc,
+                "periodo": periodo,
+                "page": page,
+                "per_page": per_page
+            }
         }
         
     except Exception as e:
         logger.error(f"❌ Error obteniendo comprobantes: {e}")
-        raise HTTPException(status_code=500, detail=f"Error al obtener comprobantes: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ENDPOINTS ELIMINADOS (no existen en manual SUNAT):
 # - /actualizar-desde-sunat/ -> No existe en manual SUNAT

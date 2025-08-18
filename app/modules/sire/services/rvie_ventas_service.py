@@ -23,7 +23,10 @@ class RvieVentasService:
         self.db = db
         # Usar servicios oficiales únicamente
         self.api_client = SunatApiClient()
-        self.token_manager = SireTokenManager(db)
+        # ✅ CORREGIDO: Pasar la colección específica, no toda la base de datos
+        self.token_manager = SireTokenManager(
+            mongo_collection=db.sire_sessions if db is not None else None
+        )
         self.auth_service = SireAuthService(self.api_client, self.token_manager)
 
     async def descargar_propuesta(
@@ -163,6 +166,112 @@ class RvieVentasService:
         
         except Exception as e:
             logger.error(f"❌ Error en descargar_propuesta: {str(e)}")
+            raise e
+    
+    async def obtener_comprobantes(
+        self,
+        ruc: str,
+        periodo: str,
+        page: int = 1,
+        per_page: int = 99,
+        filtros: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Obtener comprobantes de la propuesta usando el endpoint que funciona
+        URL: /v1/contribuyente/migeigv/libros/rvie/propuesta/web/propuesta/{periodo}/comprobantes
+        
+        Este es el endpoint que funciona en tu script explorador_comprobantes.py
+        """
+        try:
+            logger.info(f"📄 Obteniendo comprobantes RVIE para RUC {ruc}, periodo {periodo}")
+            
+            # 🔍 LOG DETALLADO: Verificar estado del token manager
+            logger.info(f"🔧 [DEBUG] Token manager inicializado: {self.token_manager is not None}")
+            logger.info(f"🔧 [DEBUG] MongoDB collection: {self.token_manager.mongo_collection is not None}")
+            
+            # Obtener token válido
+            logger.info(f"🔑 [DEBUG] Solicitando token válido para RUC {ruc}...")
+            token = await self.token_manager.get_valid_token(ruc)
+            
+            if not token:
+                logger.warning(f"❌ [DEBUG] No hay token válido para RUC {ruc}")
+                logger.info(f"🔄 [DEBUG] Intentando usar método alternativo get_active_session_token...")
+                
+                # Intentar método alternativo
+                token = await self.token_manager.get_active_session_token(ruc)
+                
+                if not token:
+                    logger.error(f"❌ [DEBUG] Tampoco hay sesión activa para RUC {ruc}")
+                    raise Exception("No se pudo obtener token válido. Requiere autenticación previa.")
+                else:
+                    logger.info(f"✅ [DEBUG] Token obtenido via sesión activa")
+            else:
+                logger.info(f"✅ [DEBUG] Token obtenido via get_valid_token")
+            
+            # Log del token (solo primeros caracteres por seguridad)
+            logger.info(f"🔑 [DEBUG] Token obtenido: {token[:50]}... (longitud: {len(token)})")
+            
+            # URL que funciona según tu script
+            url_base = "https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rvie/propuesta/web/propuesta"
+            url = f"{url_base}/{periodo}/comprobantes"
+            
+            # Parámetros de paginación
+            params = {
+                "page": page,
+                "perPage": per_page
+            }
+            
+            # Agregar filtros adicionales si se proporcionan
+            if filtros:
+                params.update(filtros)
+            
+            # Headers
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json"
+            }
+            
+            logger.info(f"🌐 Consultando URL: {url}")
+            logger.info(f"📋 Parámetros: {params}")
+            logger.info(f"🔑 [DEBUG] Headers Authorization: Bearer {token[:50]}...")
+            
+            # Realizar consulta
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers, params=params) as response:
+                    response_text = await response.text()
+                    
+                    if response.status == 200:
+                        try:
+                            data = await response.json()
+                            logger.info(f"✅ Comprobantes obtenidos exitosamente")
+                            
+                            # Log de información de respuesta
+                            if 'paginacion' in data:
+                                pag = data['paginacion']
+                                logger.info(f"📑 Página {pag.get('page', 'N/A')} de {pag.get('totalRegistros', 'N/A')} registros")
+                            
+                            if 'registros' in data:
+                                logger.info(f"📊 {len(data['registros'])} comprobantes en esta página")
+                            
+                            return data
+                            
+                        except Exception as e:
+                            logger.error(f"❌ Error procesando respuesta JSON: {e}")
+                            return {"error": "Error procesando respuesta", "raw_response": response_text}
+                    
+                    else:
+                        logger.error(f"❌ Error {response.status}: {response_text}")
+                        return {
+                            "error": f"Error HTTP {response.status}",
+                            "details": response_text,
+                            "url": url,
+                            "params": params
+                        }
+            
+        except Exception as e:
+            logger.error(f"❌ Error en obtener_comprobantes: {str(e)}")
             raise e
 
     def _procesar_contenido_txt(self, contenido: str) -> List[Dict[str, Any]]:
