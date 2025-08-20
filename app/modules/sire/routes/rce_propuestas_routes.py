@@ -751,15 +751,17 @@ async def consultar_resumen_sunat_directo(
         if not token:
             raise HTTPException(status_code=401, detail="No se pudo obtener token SUNAT")
 
-        # Parámetros exactos del script
+        # Parámetros según el manual v27
         resumen_params = {
-            'numRuc': ruc,
-            'perTributario': per_tributario,
-            'opcion': opcion
+            'codLibro': '080000'  # Código para RCE según manual v27
         }
         
-        # URL exacta del script 
-        resumen_url = 'https://api-sire.sunat.gob.pe/v1/contribuyente/gem/rce/resumenPeriodo'
+        # URL corregida según Manual SIRE Compras v27 - Servicio 5.35
+        # codTipoResumen: 1=Propuesta, 2=Preliminar, 3=No Incluidos, 4=Registro, 5=Preliminar registrado
+        cod_tipo_resumen = '1'  # Resumen de propuesta por defecto
+        cod_tipo_archivo = '0'  # TXT por defecto
+        
+        resumen_url = f'https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rvierce/resumen/web/resumencomprobantes/{per_tributario}/{cod_tipo_resumen}/{cod_tipo_archivo}/exporta'
         
         async with httpx.AsyncClient(timeout=30.0) as client:
             resumen_headers = {

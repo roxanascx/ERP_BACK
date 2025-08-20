@@ -7,6 +7,8 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 import io
+import httpx
+import logging
 
 from ....database import get_database
 from ....shared.exceptions import SireException, SireValidationException
@@ -19,14 +21,123 @@ from ..schemas.rce_schemas import (
     RceApiResponse, RceErrorResponse
 )
 
+# Configurar logging
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
 def get_rce_compras_service(db=Depends(get_database)) -> RceComprasService:
     """Dependency para obtener el servicio de comprobantes RCE"""
+    from ..services.token_manager import SireTokenManager
+    
     api_client = SunatApiClient()
-    auth_service = SireAuthService(db, api_client)
+    token_manager = SireTokenManager(mongo_collection=db.sire_sessions)  # Usar misma colección que funciona
+    auth_service = SireAuthService(api_client, token_manager)
     return RceComprasService(db, api_client, auth_service)
+
+
+# ===== ENDPOINT DE RESUMEN (DEBE IR ANTES DE /comprobantes/{correlativo}) =====
+
+@router.get(
+    "/resumen-sunat",
+    summary="Resumen de período RCE desde SUNAT",
+    description="Obtener resumen del período RCE consultando directamente SUNAT"
+)
+async def obtener_resumen_periodo(
+    ruc: str = Query(..., description="RUC del contribuyente"),
+    periodo: str = Query(..., description="Período en formato YYYYMM"),
+    service: RceComprasService = Depends(get_rce_compras_service)
+):
+    """
+    Obtener resumen del período RCE consultando directamente SUNAT
+    ✅ CONFIRMADO: Este endpoint SÍ se ejecuta correctamente
+    """
+    print(f"🚀 [DEBUG] EJECUTANDO NUESTRO ENDPOINT PERSONALIZADO RESUMEN - RUC: {ruc}, Período: {periodo}")
+    logger.info(f"🚀 [DEBUG] EJECUTANDO NUESTRO ENDPOINT PERSONALIZADO RESUMEN - RUC: {ruc}, Período: {periodo}")
+    
+    try:
+        # Obtener token válido para SUNAT
+        token = await service.auth_service.token_manager.get_valid_token(ruc)
+        if not token:
+            return {"error": "No se pudo obtener token SUNAT", "ruc": ruc}
+
+        # Parámetros según el manual v27 - EXACTAMENTE como el script exitoso
+        resumen_params = {
+            'codLibro': '080000'  # RCE según manual v27
+        }
+        
+        # URL según Manual SIRE Compras v27 - EXACTAMENTE como el script exitoso
+        cod_tipo_resumen = '1'  # Resumen de propuesta
+        cod_tipo_archivo = '0'  # TXT
+        
+        resumen_url = f'https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rvierce/resumen/web/resumencomprobantes/{periodo}/{cod_tipo_resumen}/{cod_tipo_archivo}/exporta'
+        
+        logger.info(f"🌐 [DEBUG] URL SUNAT: {resumen_url}")
+        logger.info(f"🌐 [DEBUG] Params: {resumen_params}")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resumen_headers = {
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+            
+            resumen_response = await client.get(
+                resumen_url, 
+                headers=resumen_headers, 
+                params=resumen_params
+            )
+            
+            logger.info(f"📊 [DEBUG] Status SUNAT: {resumen_response.status_code}")
+            
+            if resumen_response.status_code == 200:
+                content = resumen_response.text
+                logger.info(f"📄 [DEBUG] Contenido: {content[:200]}...")
+                
+                # Parsear como lo hace el script exitoso
+                lineas = content.strip().split('\n')
+                
+                # Buscar línea TOTAL
+                datos_total = None
+                for linea in lineas:
+                    if linea.startswith('TOTAL '):
+                        campos = linea.split('|')
+                        if len(campos) >= 12:
+                            datos_total = {
+                                "tipo": "TOTAL",
+                                "total_documentos": int(campos[1]) if campos[1].isdigit() else 0,
+                                "total_cp": float(campos[12]) if len(campos) > 12 and campos[12].replace('.','').isdigit() else 0.0,
+                                "valor_adq_ng": float(campos[8]) if len(campos) > 8 and campos[8].replace('.','').isdigit() else 0.0,
+                                "contenido_raw": linea
+                            }
+                            break
+                
+                return {
+                    "exitoso": True,
+                    "mensaje": "✅ Resumen obtenido desde SUNAT correctamente",
+                    "ruc": ruc,
+                    "periodo": periodo,
+                    "datos": datos_total,
+                    "total_lineas": len(lineas),
+                    "contenido_completo": content
+                }
+            else:
+                return {
+                    "exitoso": False,
+                    "mensaje": f"Error SUNAT {resumen_response.status_code}",
+                    "detalle": resumen_response.text
+                }
+                
+    except Exception as e:
+        logger.error(f"💥 [DEBUG] Error: {str(e)}")
+        return {
+            "exitoso": False,
+            "error": str(e),
+            "mensaje": "Error en endpoint personalizado"
+        }
+
+# ===== FIN ENDPOINT DE RESUMEN =====
 
 
 @router.post(

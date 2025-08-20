@@ -959,64 +959,37 @@ async def descargar_archivo(
 async def consultar_ticket_sunat(
     ruc: str = Query(..., description="RUC del contribuyente"),
     ticket_id: str = Query(..., alias="ticket_id", description="ID del ticket a consultar"),
+    periodo: Optional[str] = Query(None, description="Período específico (opcional)"),
     rvie_service: RvieService = Depends(get_rvie_service)
 ):
     """
-    Consultar ticket directamente - Implementación funcional con guardado automático
+    Consultar ticket directamente en SUNAT con implementación real
     
-    Este endpoint retorna información de tickets y automáticamente los guarda 
-    en la base de datos para futuras consultas.
+    Este endpoint consulta directamente la API de SUNAT v27 y automáticamente 
+    guarda el resultado en la base de datos para futuras consultas.
     """
     try:
-        logger.info(f"Consultando ticket {ticket_id} para RUC {ruc}")
+        logger.info(f"🔍 [RVIE-ROUTE] Consultando ticket {ticket_id} para RUC {ruc} (período: {periodo})")
         
-        # Mock basado en el ticket que funciona en el script
-        if ticket_id == "20240300000018":
-            ticket_response = RvieTicketResponse(
-                ticket_id=ticket_id,
-                ruc=ruc,
-                estado="TERMINADO",  # Usar 'estado' en lugar de 'status'
-                operacion="descargar-propuesta", 
-                periodo="202407",
-                descripcion="Generar archivo exportar propuesta",
-                progreso_porcentaje=100,
-                fecha_creacion="2025-08-16T14:13:11",
-                fecha_actualizacion="2025-08-16T14:13:11",
-                resultado={
-                    "per_tributario": "202407",
-                    "fec_inicio_proceso": "2025-08-16",
-                    "cod_proceso": "10",
-                    "des_proceso": "Generar archivo exportar propuesta",
-                    "cod_estado_proceso": "06",
-                    "des_estado_proceso": "Terminado",
-                    "archivo_reporte": [
-                        {
-                            "codTipoAchivoReporte": "00",
-                            "nomArchivoReporte": "LE2061296912520250800014040001EXP2.zip"
-                        }
-                    ]
-                },
-                archivo_nombre="LE2061296912520250800014040001EXP2.zip",
-                archivo_size=526,
-                error_mensaje=None
-            )
-        else:
-            # Para otros tickets, crear respuesta genérica
-            ticket_response = RvieTicketResponse(
-                ticket_id=ticket_id,
-                ruc=ruc,
-                estado="PROCESANDO",  # Usar 'estado' en lugar de 'status'
-                operacion="descargar-propuesta",
-                periodo="202508",
-                descripcion=f"Ticket {ticket_id} consultado externamente",
-                progreso_porcentaje=50,
-                fecha_creacion="2025-08-16T16:00:00",
-                fecha_actualizacion="2025-08-16T16:00:00",
-                resultado={"consultado_externamente": True},
-                archivo_nombre=None,
-                archivo_size=None,
-                error_mensaje=None
-            )
+        # Usar la implementación real del servicio
+        ticket_response = await rvie_service.consultar_estado_ticket_sunat(ruc, ticket_id, periodo)
+        
+        # Convertir a RvieTicketResponse
+        rvie_ticket_response = RvieTicketResponse(
+            ticket_id=ticket_response.ticket_id,
+            ruc=ticket_response.ruc,
+            estado=ticket_response.status,
+            operacion=ticket_response.operacion,
+            periodo=ticket_response.periodo,
+            descripcion=ticket_response.descripcion,
+            progreso_porcentaje=ticket_response.progreso_porcentaje,
+            fecha_creacion=ticket_response.fecha_creacion,
+            fecha_actualizacion=ticket_response.fecha_actualizacion,
+            resultado=ticket_response.resultado,
+            archivo_nombre=ticket_response.archivo_nombre,
+            archivo_size=ticket_response.archivo_size,
+            error_mensaje=ticket_response.error_mensaje
+        )
         
         # 🔄 GUARDAR AUTOMÁTICAMENTE EN LA BASE DE DATOS
         try:
@@ -1033,19 +1006,19 @@ async def consultar_ticket_sunat(
                 }
                 
                 ticket_obj = SireTicket(
-                    ticket_id=ticket_response.ticket_id,
-                    ruc=ticket_response.ruc,
+                    ticket_id=rvie_ticket_response.ticket_id,
+                    ruc=rvie_ticket_response.ruc,
                     operation_type=TicketOperationType.DESCARGAR_PROPUESTA,
-                    operation_params={"consultado_externamente": True},
-                    status=status_map.get(ticket_response.estado, TicketStatus.PROCESANDO),
-                    progress_percentage=ticket_response.progreso_porcentaje or 0.0,
-                    status_message=ticket_response.descripcion or "",
+                    operation_params={"consultado_externamente": True, "periodo": rvie_ticket_response.periodo},
+                    status=status_map.get(rvie_ticket_response.estado, TicketStatus.PROCESANDO),
+                    progress_percentage=rvie_ticket_response.progreso_porcentaje or 0.0,
+                    status_message=rvie_ticket_response.descripcion or "",
                     created_at=datetime.now(),
                     updated_at=datetime.now(),
                     expires_at=datetime.now() + timedelta(hours=24),  # Expira en 24 horas
-                    output_file_name=ticket_response.archivo_nombre,
-                    output_file_size=ticket_response.archivo_size,
-                    error_message=ticket_response.error_mensaje
+                    output_file_name=rvie_ticket_response.archivo_nombre,
+                    output_file_size=rvie_ticket_response.archivo_size,
+                    error_message=rvie_ticket_response.error_mensaje
                 )
                 
                 # Guardar usando el método correcto
@@ -1057,11 +1030,11 @@ async def consultar_ticket_sunat(
             logger.warning(f"⚠️ [RVIE] Error guardando ticket {ticket_id} en BD: {save_error}")
             # No fallar la consulta si no se puede guardar
         
-        logger.info(f"✅ Ticket {ticket_id} consultado exitosamente")
-        return ticket_response
+        logger.info(f"✅ [RVIE-ROUTE] Ticket {ticket_id} consultado exitosamente desde SUNAT")
+        return rvie_ticket_response
         
     except Exception as e:
-        logger.error(f"Error en consulta de ticket: {str(e)}")
+        logger.error(f"❌ [RVIE-ROUTE] Error en consulta de ticket: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Error consultando ticket: {str(e)}"
@@ -1099,10 +1072,11 @@ async def obtener_resumen(
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 
-@router.get("/consultar-ticket-sunat", response_model=RvieTicketResponse)
-async def consultar_ticket_sunat(
+@router.get("/consultar-ticket-sunat-protegido", response_model=RvieTicketResponse)
+async def consultar_ticket_sunat_protegido(
     ruc: str = Query(..., description="RUC del contribuyente"),
     ticket_id: str = Query(..., description="ID del ticket a consultar"),
+    periodo: Optional[str] = Query(None, description="Período específico (opcional)"),
     company: CompanyModel = Depends(validate_ruc_access),
     rvie_service: RvieService = Depends(get_rvie_service)
 ):
@@ -1112,16 +1086,34 @@ async def consultar_ticket_sunat(
     Útil para consultar tickets generados externamente (scripts, Postman, etc.)
     """
     try:
-        logger.info(f"Consultando ticket {ticket_id} directamente en SUNAT para RUC {ruc}")
+        logger.info(f"🔍 [RVIE-ROUTE] Consultando ticket {ticket_id} directamente en SUNAT para RUC {ruc} (período: {periodo})")
         
-        # Ejecutar consulta directa a SUNAT
-        estado_ticket = await rvie_service.consultar_estado_ticket(
+        # Ejecutar consulta directa a SUNAT usando el método corregido
+        ticket_response = await rvie_service.consultar_estado_ticket_sunat(
             ruc=ruc,
-            ticket_id=ticket_id
+            ticket_id=ticket_id,
+            periodo=periodo
         )
         
-        logger.info(f"Estado ticket SUNAT consultado: {ticket_id}")
-        return estado_ticket
+        # Convertir a RvieTicketResponse
+        rvie_ticket_response = RvieTicketResponse(
+            ticket_id=ticket_response.ticket_id,
+            ruc=ticket_response.ruc,
+            estado=ticket_response.status,
+            operacion=ticket_response.operacion,
+            periodo=ticket_response.periodo,
+            descripcion=ticket_response.descripcion,
+            progreso_porcentaje=ticket_response.progreso_porcentaje,
+            fecha_creacion=ticket_response.fecha_creacion,
+            fecha_actualizacion=ticket_response.fecha_actualizacion,
+            resultado=ticket_response.resultado,
+            archivo_nombre=ticket_response.archivo_nombre,
+            archivo_size=ticket_response.archivo_size,
+            error_mensaje=ticket_response.error_mensaje
+        )
+        
+        logger.info(f"✅ [RVIE-ROUTE] Estado ticket SUNAT consultado: {ticket_id}")
+        return rvie_ticket_response
         
     except HTTPException:
         raise

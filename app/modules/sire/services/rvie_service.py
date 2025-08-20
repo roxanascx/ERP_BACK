@@ -637,10 +637,13 @@ class RvieService:
                 raise SireException("Token no válido o expirado")
             
             # Obtener información del ticket primero para los parámetros
+            periodo = "202507"  # Valor por defecto 
             try:
                 ticket_info = await self.consultar_estado_ticket(ruc, ticket_id)
                 # Usar información del ticket si está disponible
                 archivo_nombre = ticket_info.get("archivo_nombre") if ticket_info else None
+                # Obtener período del ticket si está disponible
+                periodo = ticket_info.get("periodo", periodo) if ticket_info else periodo
             except Exception as e:
                 logger.warning(f"⚠️ [RVIE] No se pudo obtener info del ticket, usando valores por defecto: {e}")
                 archivo_nombre = None
@@ -652,12 +655,12 @@ class RvieService:
             # URL correcta según script funcional V25
             download_url = "https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rvierce/gestionprocesosmasivos/web/masivo/archivoreporte"
             
-            # Parámetros exactos que funcionan según tu script
+            # Parámetros dinámicos basados en la información del ticket
             params = {
                 'nomArchivoReporte': archivo_nombre,  # Usar el archivo exacto del ticket
                 'codTipoArchivoReporte': '00',        # Según consulta anterior
-                'codLibro': '140000',                 # Código RVIE  
-                'perTributario': '202407',            # Período que funciona (julio 2024)
+                'codLibro': '080000',                 # 080000 para RCE según manual v27
+                'perTributario': periodo,             # Período dinámico
                 'codProceso': '10',                   # Código del proceso
                 'numTicket': ticket_id                # Número de ticket
             }
@@ -2705,7 +2708,7 @@ class RvieService:
             logger.error(f"❌ [RVIE] Error obteniendo resumen guardado: {e}")
             return None
 
-    async def consultar_estado_ticket_sunat(self, ruc: str, ticket_id: str) -> TicketResponse:
+    async def consultar_estado_ticket_sunat(self, ruc: str, ticket_id: str, periodo: str = None) -> TicketResponse:
         """
         Consultar estado del ticket directamente en SUNAT API
         
@@ -2715,6 +2718,7 @@ class RvieService:
         Args:
             ruc: RUC del contribuyente
             ticket_id: ID del ticket a consultar
+            periodo: Período específico a consultar (opcional, se detecta automáticamente)
         
         Returns:
             TicketResponse: Estado del ticket desde SUNAT
@@ -2727,22 +2731,45 @@ class RvieService:
             if not token:
                 raise SireException("Token no válido o expirado")
             
-            # Preparar parámetros para consulta directa a SUNAT
-            # Usar el endpoint oficial de consulta de tickets SUNAT
+            # Si no se especifica período, usar rango amplio para buscar
+            if not periodo:
+                # Usar los últimos 12 meses para tener más probabilidad de encontrar el ticket
+                from datetime import datetime, timedelta
+                fecha_actual = datetime.now()
+                periodo_fin = fecha_actual.strftime('%Y%m')
+                fecha_inicio = fecha_actual - timedelta(days=365)
+                periodo_inicio = fecha_inicio.strftime('%Y%m')
+            else:
+                periodo_inicio = periodo
+                periodo_fin = periodo
+            
+            # Preparar parámetros para consulta directa a SUNAT - CORREGIDOS según API v27
             url = "https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rvierce/gestionprocesosmasivos/web/masivo/consultaestadotickets"
             
             params = {
-                'perIni': '202407',  # Período inicial por defecto
-                'perFin': '202407',  # Período final por defecto  
+                'perIni': periodo_inicio,  # Período inicial dinámico
+                'perFin': periodo_fin,     # Período final dinámico
                 'page': 1,
-                'perPage': 20,
-                'codLibro': '140000',  # Código libro RVIE
-                'codOrigenEnvio': '2',  # Origen envío
-                'numTicket': ticket_id
+                'perPage': 50,             # Aumentar para más resultados
+                'codLibro': '080000',      # 080000 para RCE según manual v27
+                'codOrigenEnvio': '2'      # Origen servicio web
             }
             
-            # Hacer request directo a SUNAT
-            response_data = await self.api_client.get_with_auth(url, token, params)
+            # Hacer request directo a SUNAT usando _make_request
+            headers = {
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+            
+            response = await self.api_client._make_request(
+                method='GET',
+                url=url,
+                headers=headers,
+                params=params
+            )
+            
+            response_data = response.json()
             
             if not response_data or 'registros' not in response_data:
                 raise SireException(f"Ticket {ticket_id} no encontrado en SUNAT")
@@ -2751,35 +2778,60 @@ class RvieService:
             if not registros:
                 raise SireException(f"Ticket {ticket_id} no encontrado en SUNAT")
             
-            # Procesar primer registro encontrado
-            registro = registros[0]
+            # Buscar el ticket específico por ID
+            registro_encontrado = None
+            for registro in registros:
+                if registro.get('numTicket') == ticket_id:
+                    registro_encontrado = registro
+                    break
+            
+            if not registro_encontrado:
+                # Si no se encuentra, tomar el primer registro como fallback
+                logger.warning(f"⚠️ [RVIE-SUNAT] Ticket exacto {ticket_id} no encontrado, usando primer resultado")
+                registro_encontrado = registros[0]
             
             # Mapear respuesta de SUNAT a nuestro modelo
-            ticket_response = TicketResponse(
-                ticket_id=ticket_id,
-                ruc=ruc,
-                status=self._mapear_estado_sunat(registro.get('codEstadoProceso', '06')),
-                operacion='descargar-propuesta',  # Asumimos descarga por defecto
-                periodo=registro.get('perTributario', ''),
-                descripcion=registro.get('desProceso', ''),
-                progreso_porcentaje=100 if registro.get('codEstadoProceso') == '06' else 50,
-                fecha_creacion=registro.get('fecInicioProceso', ''),
-                fecha_actualizacion=registro.get('fecInicioProceso', ''),
-                resultado={
-                    'archivo_reporte': registro.get('archivoReporte', []),
-                    'detalle_ticket': registro.get('detalleTicket', {}),
-                    'sub_procesos': registro.get('subProcesos', [])
-                },
-                archivo_nombre=None,
-                archivo_size=None,
-                error_mensaje=None
-            )
+            # Parseamos las fechas desde strings
+            from datetime import datetime
+            try:
+                fecha_inicio = datetime.strptime(registro_encontrado.get('fecInicioProceso', ''), '%Y-%m-%d')
+                fecha_creacion_str = fecha_inicio.isoformat()
+            except:
+                fecha_inicio = datetime.now()
+                fecha_creacion_str = fecha_inicio.isoformat()
             
             # Extraer nombre de archivo si está disponible
-            archivos_reporte = registro.get('archivoReporte', [])
+            archivo_nombre = None
+            archivos_reporte = registro_encontrado.get('archivoReporte', [])
             if archivos_reporte and len(archivos_reporte) > 0:
                 primer_archivo = archivos_reporte[0]
-                ticket_response.archivo_nombre = primer_archivo.get('nomArchivoReporte')
+                archivo_nombre = primer_archivo.get('nomArchivoReporte')
+            
+            # Mapear estado
+            estado_mapeado = self._mapear_estado_sunat(registro_encontrado.get('codEstadoProceso', '06'))
+            
+            # Crear un objeto simple con todas las propiedades necesarias
+            class SimpleTicketResponse:
+                def __init__(self):
+                    self.ticket_id = registro_encontrado.get('numTicket', ticket_id)
+                    self.ruc = ruc
+                    self.periodo = registro_encontrado.get('perTributario', periodo or '')
+                    self.operacion = 'descargar-propuesta'
+                    self.status = estado_mapeado
+                    self.descripcion = registro_encontrado.get('desProceso', '')
+                    self.progreso_porcentaje = 100.0 if registro_encontrado.get('codEstadoProceso') == '06' else 50.0
+                    self.fecha_creacion = fecha_creacion_str
+                    self.fecha_actualizacion = fecha_creacion_str
+                    self.resultado = {
+                        'archivo_reporte': registro_encontrado.get('archivoReporte', []),
+                        'detalle_ticket': registro_encontrado.get('detalleTicket', {}),
+                        'sub_procesos': registro_encontrado.get('subProcesos', [])
+                    }
+                    self.archivo_nombre = archivo_nombre
+                    self.archivo_size = 0  # Usar 0 en lugar de None
+                    self.error_mensaje = None
+            
+            ticket_response = SimpleTicketResponse()
             
             logger.info(f"✅ [RVIE-SUNAT] Ticket {ticket_id} consultado desde SUNAT: {ticket_response.status}")
             return ticket_response

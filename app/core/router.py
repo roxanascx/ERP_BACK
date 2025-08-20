@@ -67,13 +67,13 @@ api_router.include_router(
 
 api_router.include_router(
     sire_rce_propuestas_routes.router,
-    prefix="/sire/rce",
+    prefix="/sire/rce/propuestas",
     tags=["SIRE-RCE-Propuestas"]
 )
 
 api_router.include_router(
     sire_rce_resumen_routes.router,
-    prefix="/sire/rce",
+    prefix="/sire/rce/resumen",
     tags=["SIRE-RCE-Resumen"]
 )
 
