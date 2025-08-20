@@ -78,18 +78,26 @@ class SireTokenManager:
             
             # Almacenar en Redis si está disponible
             if self.redis_client:
+                logger.info(f"💾 [TOKEN] Almacenando en Redis para RUC {ruc}")
                 await self._store_in_redis(session_id, session, token_data.expires_in)
+            else:
+                logger.info(f"ℹ️ [TOKEN] Redis no disponible, saltando almacenamiento en Redis")
             
             # Almacenar en MongoDB para persistencia
             if self.mongo_collection is not None:
+                logger.info(f"💾 [TOKEN] Almacenando en MongoDB para RUC {ruc}")
                 await self._store_in_mongo(session_id, session, credentials_hash)
+            else:
+                logger.warning(f"⚠️ [TOKEN] MongoDB collection no disponible para RUC {ruc}")
             
             # Cache en memoria como fallback
+            logger.info(f"💾 [TOKEN] Almacenando en cache memoria para RUC {ruc}")
             self.token_cache[session_id] = session
             
             # Limpiar cache si está muy grande
             await self._cleanup_cache()
             
+            logger.info(f"✅ [TOKEN] Token almacenado exitosamente para RUC {ruc}, session_id: {session_id}")
             return session_id
             
         except Exception as e:
@@ -279,13 +287,24 @@ class SireTokenManager:
     async def _store_in_mongo(self, session_id: str, session: SireSession, credentials_hash: str):
         """Almacenar sesión en MongoDB"""
         try:
+            if self.mongo_collection is None:
+                logger.warning("⚠️ [TOKEN] MongoDB collection no disponible, saltando almacenamiento")
+                return
+            
             session_doc = session.model_dump()
             session_doc["_id"] = session_id
             session_doc["credentials_hash"] = credentials_hash
             
-            await self.mongo_collection.insert_one(session_doc)
+            logger.info(f"💾 [TOKEN] Almacenando sesión en MongoDB: {session_id} para RUC {session.ruc}")
+            
+            result = await self.mongo_collection.insert_one(session_doc)
+            
+            logger.info(f"✅ [TOKEN] Sesión almacenada exitosamente en MongoDB: {result.inserted_id}")
+            
         except Exception as e:
-            pass
+            logger.error(f"❌ [TOKEN] Error almacenando sesión en MongoDB: {e}")
+            import traceback
+            logger.error(f"❌ [TOKEN] Traceback: {traceback.format_exc()}")
     
     async def _find_active_session(self, ruc: str) -> Optional[SireSession]:
         """Buscar sesión activa para RUC"""

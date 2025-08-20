@@ -35,6 +35,8 @@ docker run -d -p 27017:27017 --name mongodb mongo:latest
 ```bash
 uvicorn app.main:app --reload
 ```
+ .\venv\Scripts\activate; .\venv\Scripts\uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
 
 ## Estructura del proyecto
 

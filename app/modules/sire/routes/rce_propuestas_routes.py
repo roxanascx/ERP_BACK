@@ -6,6 +6,7 @@ Basado en Manual SUNAT SIRE Compras v27.0
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from pydantic import BaseModel
+import httpx
 
 from ....database import get_database
 from ....shared.exceptions import SireException, SireValidationException
@@ -33,7 +34,7 @@ def get_rce_propuesta_service(db=Depends(get_database)) -> RcePropuestaService:
     from ..services.token_manager import SireTokenManager
     
     api_client = SunatApiClient()
-    token_manager = SireTokenManager(mongo_collection=db.sire_tokens)
+    token_manager = SireTokenManager(mongo_collection=db.sire_sessions)  # Usar misma colección que RVIE
     auth_service = SireAuthService(api_client, token_manager)
     compras_service = RceComprasService(db, api_client, auth_service)
     return RcePropuestaService(db, api_client, auth_service, compras_service)
@@ -745,8 +746,8 @@ async def consultar_resumen_sunat_directo(
     Consulta directa al endpoint de resumen de SUNAT para RCE
     """
     try:
-        # Obtener token vigente
-        token = await service.auth_service.get_valid_token(ruc)
+        # Obtener token vigente usando token_manager (ahora con la colección correcta)
+        token = await service.auth_service.token_manager.get_valid_token(ruc)
         if not token:
             raise HTTPException(status_code=401, detail="No se pudo obtener token SUNAT")
 
@@ -760,7 +761,6 @@ async def consultar_resumen_sunat_directo(
         # URL exacta del script 
         resumen_url = 'https://api-sire.sunat.gob.pe/v1/contribuyente/gem/rce/resumenPeriodo'
         
-        import httpx
         async with httpx.AsyncClient(timeout=30.0) as client:
             resumen_headers = {
                 'Authorization': f'Bearer {token}',

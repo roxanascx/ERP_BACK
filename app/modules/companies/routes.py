@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query, status
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+import logging
 
 from .services import CompanyService
 from .schemas import (
@@ -10,11 +11,105 @@ from .schemas import (
     CurrentCompanyResponse, OperationResponse, SireMethod
 )
 
+# Importaciones para auto-autenticación SIRE
+from ..sire.services.auth_service import SireAuthService
+from ..sire.services.api_client import SunatApiClient
+from ..sire.services.token_manager import SireTokenManager
+from ..sire.models.auth import SireCredentials
+from ...database import get_database
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 # Dependency injection
 def get_company_service() -> CompanyService:
     return CompanyService()
+
+# =========================================
+# FUNCIONES AUXILIARES PARA AUTO-AUTENTICACIÓN SIRE
+# =========================================
+
+async def auto_authenticate_sire_if_needed(ruc: str, company_service: CompanyService) -> Optional[str]:
+    """
+    Auto-autentica una empresa con SIRE si tiene credenciales configuradas
+    
+    Args:
+        ruc: RUC de la empresa
+        company_service: Servicio de empresas
+    
+    Returns:
+        str: Session ID si la autenticación fue exitosa, None si no
+    """
+    try:
+        logger.info(f"🔐 [AUTO-AUTH] Verificando auto-autenticación SIRE para RUC {ruc}")
+        
+        # Obtener empresa y verificar configuración SIRE
+        company = await company_service.get_company(ruc)
+        
+        if not company:
+            logger.info(f"ℹ️ [AUTO-AUTH] RUC {ruc}: Empresa no encontrada")
+            return None
+            
+        logger.info(f"🔍 [AUTO-AUTH] RUC {ruc}: Empresa encontrada - sire_activo={company.sire_activo}")
+        
+        if not company.sire_activo:
+            logger.info(f"ℹ️ [AUTO-AUTH] RUC {ruc}: SIRE no está activo")
+            return None
+        
+        # Verificar que tenga credenciales completas
+        credentials_check = {
+            "sunat_usuario": company.sunat_usuario,
+            "sunat_clave": company.sunat_clave, 
+            "sire_client_id": company.sire_client_id,
+            "sire_client_secret": company.sire_client_secret
+        }
+        
+        logger.info(f"🔍 [AUTO-AUTH] RUC {ruc}: Verificando credenciales...")
+        for field, value in credentials_check.items():
+            has_value = bool(value and str(value).strip())
+            logger.info(f"   {field}: {'✅' if has_value else '❌'} ({len(str(value)) if value else 0} chars)")
+        
+        missing_fields = [field for field, value in credentials_check.items() if not (value and str(value).strip())]
+        
+        if missing_fields:
+            logger.warning(f"⚠️ [AUTO-AUTH] RUC {ruc}: Credenciales faltantes: {', '.join(missing_fields)}")
+            return None
+        
+        # Crear servicios SIRE
+        database = get_database()
+        token_manager = SireTokenManager(mongo_collection=database.sire_sessions if database is not None else None)
+        
+        # Verificar si ya existe una sesión válida
+        existing_token = await token_manager.get_valid_token(ruc)
+        if existing_token:
+            logger.info(f"✅ [AUTO-AUTH] RUC {ruc}: Sesión válida existente encontrada")
+            return "existing_session"
+        
+        # Crear credenciales y autenticar
+        credentials = SireCredentials(
+            ruc=ruc,
+            sunat_usuario=company.sunat_usuario,
+            sunat_clave=company.sunat_clave,
+            client_id=company.sire_client_id,
+            client_secret=company.sire_client_secret
+        )
+        
+        api_client = SunatApiClient()
+        auth_service = SireAuthService(api_client, token_manager)
+        
+        logger.info(f"🚀 [AUTO-AUTH] RUC {ruc}: Iniciando autenticación automática...")
+        
+        auth_response = await auth_service.authenticate(credentials)
+        
+        logger.info(f"✅ [AUTO-AUTH] RUC {ruc}: Autenticación exitosa - Session ID: {auth_response.session_id}")
+        
+        return auth_response.session_id
+        
+    except Exception as e:
+        logger.error(f"❌ [AUTO-AUTH] RUC {ruc}: Error en auto-autenticación: {e}")
+        # No propagamos el error para no afectar la selección de empresa
+        return None
 
 # =========================================
 # ENDPOINTS BÁSICOS DE EMPRESAS (CRUD)
@@ -138,19 +233,50 @@ async def select_current_company(
     ruc: str,
     service: CompanyService = Depends(get_company_service)
 ):
-    """Seleccionar empresa como actual para operaciones"""
+    """
+    Seleccionar empresa como actual para operaciones
+    
+    ✨ NUEVA FUNCIONALIDAD: Auto-autenticación SIRE automática
+    - Si la empresa tiene SIRE configurado, se autentica automáticamente
+    - No afecta la selección si falla la autenticación SIRE
+    """
     if len(ruc) != 11:
         raise HTTPException(status_code=400, detail="RUC debe tener 11 dígitos")
     
     try:
+        logger.info(f"🏢 [SELECT] Seleccionando empresa RUC: {ruc}")
+        
+        # 1. Seleccionar empresa como actual (funcionalidad original)
         success = await service.select_current_company(ruc)
+        
+        if not success:
+            raise HTTPException(status_code=400, detail="No se pudo seleccionar la empresa")
+        
+        # 2. 🚀 NUEVA FUNCIONALIDAD: Auto-autenticación SIRE
+        sire_session_id = await auto_authenticate_sire_if_needed(ruc, service)
+        
+        # 3. Construir respuesta con información de autenticación SIRE
+        message = f"Empresa {ruc} seleccionada como actual"
+        
+        if sire_session_id:
+            if sire_session_id == "existing_session":
+                message += " | SIRE: Sesión existente válida ✅"
+            else:
+                message += f" | SIRE: Autenticado automáticamente ✅ (Session: {sire_session_id[:20]}...)"
+        else:
+            message += " | SIRE: No configurado o sin credenciales ⚠️"
+        
+        logger.info(f"✅ [SELECT] {message}")
+        
         return OperationResponse(
             success=True,
-            message=f"Empresa {ruc} seleccionada como actual"
+            message=message
         )
+        
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.error(f"❌ [SELECT] Error seleccionando empresa {ruc}: {e}")
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 @router.get("/current/info", response_model=CurrentCompanyResponse)

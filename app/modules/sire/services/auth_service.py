@@ -200,12 +200,15 @@ class SireAuthService:
                     if token_expires_in < 0:
                         token_expires_in = 0
             
-            # Verificar disponibilidad de API SUNAT
-            api_available = await self.api_client.health_check()
+            # ✅ CORREGIDO: No hacer health_check que devuelve 401
+            # En su lugar, verificar que tenemos token válido
+            api_available = session_active  # Si tenemos token, API está "disponible"
             
             # Servicios disponibles
             servicios_disponibles = ["RVIE", "RCE"] if api_available else []
             servicios_activos = servicios_disponibles if session_active else []
+            
+            logger.info(f"📊 [AUTH] Status para RUC {ruc}: sesion_activa={session_active}, token_expira_en={token_expires_in}")
             
             return SireStatusResponse(
                 ruc=ruc,
@@ -220,6 +223,7 @@ class SireAuthService:
             )
             
         except Exception as e:
+            logger.error(f"❌ [AUTH] Error obteniendo status para RUC {ruc}: {e}")
             return SireStatusResponse(
                 ruc=ruc,
                 sire_activo=False,
