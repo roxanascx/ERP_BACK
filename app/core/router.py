@@ -6,6 +6,13 @@ from ..modules.sire.routes import rvie_ventas_routes as sire_rvie_ventas_routes
 from ..modules.sire.routes import maintenance as sire_maintenance_routes
 from ..modules.sire.routes import auto_auth as sire_auto_auth_routes
 
+# Importar nuevas rutas RCE
+from ..modules.sire.routes import rce_comprobantes_routes as sire_rce_comprobantes_routes
+from ..modules.sire.routes import rce_propuestas_routes as sire_rce_propuestas_routes
+from ..modules.sire.routes import rce_resumen_routes as sire_rce_resumen_routes
+from ..modules.sire.routes import rce_procesos_routes as sire_rce_procesos_routes
+from ..modules.sire.routes import rce_consultas_routes as sire_rce_consultas_routes
+
 # Router principal que incluye todos los módulos
 api_router = APIRouter(prefix="/api/v1")
 
@@ -49,4 +56,35 @@ api_router.include_router(
     sire_auto_auth_routes.router,
     prefix="/sire/auto-auth",
     tags=["SIRE-AutoAuth"]
+)
+
+# Incluir rutas del módulo SIRE - RCE (Registro de Compras Electrónico)
+api_router.include_router(
+    sire_rce_comprobantes_routes.router,
+    prefix="/sire/rce/comprobantes",
+    tags=["SIRE-RCE-Comprobantes"]
+)
+
+api_router.include_router(
+    sire_rce_propuestas_routes.router,
+    prefix="/sire/rce",
+    tags=["SIRE-RCE-Propuestas"]
+)
+
+api_router.include_router(
+    sire_rce_resumen_routes.router,
+    prefix="/sire/rce",
+    tags=["SIRE-RCE-Resumen"]
+)
+
+api_router.include_router(
+    sire_rce_procesos_routes.router,
+    prefix="/sire/rce/procesos",
+    tags=["SIRE-RCE-Procesos"]
+)
+
+api_router.include_router(
+    sire_rce_consultas_routes.router,
+    prefix="/sire/rce/consultas",
+    tags=["SIRE-RCE-Consultas"]
 )

@@ -8,6 +8,12 @@ from .rvie_ventas_routes import router as rvie_ventas_router
 from .ticket_routes import router as ticket_router
 from .diagnostico_routes import router as diagnostico_router
 
+# Importar nuevas rutas RCE
+from .rce_comprobantes_routes import router as rce_comprobantes_router
+from .rce_propuestas_routes import router as rce_propuestas_router
+from .rce_procesos_routes import router as rce_procesos_router
+from .rce_consultas_routes import router as rce_consultas_router
+
 # Lista de todos los routers del módulo SIRE
 sire_routers = [
     auth_router,
@@ -15,7 +21,22 @@ sire_routers = [
     rvie_ventas_router,
     ticket_router,
     diagnostico_router,
-    # rce_router,   # Se agregará en la siguiente fase
+    # Rutas RCE - Fase 3 completada
+    rce_comprobantes_router,
+    rce_propuestas_router,
+    rce_procesos_router,
+    rce_consultas_router,
 ]
 
-__all__ = ["sire_routers", "auth_router", "rvie_router", "rvie_ventas_router", "ticket_router", "diagnostico_router"]
+__all__ = [
+    "sire_routers", 
+    "auth_router", 
+    "rvie_router", 
+    "rvie_ventas_router", 
+    "ticket_router", 
+    "diagnostico_router",
+    "rce_comprobantes_router",
+    "rce_propuestas_router", 
+    "rce_procesos_router",
+    "rce_consultas_router"
+]

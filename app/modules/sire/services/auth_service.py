@@ -351,3 +351,53 @@ class SireAuthService:
             session_id=session_id,
             expires_at=expires_at
         )
+    
+    async def obtener_token_valido(self, ruc: str, usuario_sunat: str = None, clave_sunat: str = None) -> str:
+        """
+        Obtener token SUNAT válido para un RUC
+        
+        Args:
+            ruc: RUC del contribuyente
+            usuario_sunat: Usuario SUNAT (opcional, se obtiene de credentials_manager)
+            clave_sunat: Clave SOL (opcional, se obtiene de credentials_manager)
+        
+        Returns:
+            str: Token de acceso válido
+        
+        Raises:
+            SireAuthException: Error al obtener token
+        """
+        try:
+            # Normalizar RUC
+            normalized_ruc = self._normalize_ruc(ruc)
+            
+            # Verificar si ya existe un token válido en caché
+            existing_token = await self.token_manager.get_valid_token(normalized_ruc)
+            if existing_token:
+                logger.info(f"✅ [AUTH] Token válido encontrado en caché para RUC {normalized_ruc}")
+                return existing_token
+            
+            # Obtener credenciales desde credentials_manager
+            credentials = await credentials_manager.get_credentials(normalized_ruc)
+            if not credentials:
+                raise SireAuthException(f"No se encontraron credenciales SIRE para RUC {normalized_ruc}")
+            
+            # Si se proporcionaron credenciales específicas, usarlas
+            if usuario_sunat and clave_sunat:
+                credentials.sunat_usuario = usuario_sunat
+                credentials.sunat_clave = clave_sunat
+            
+            # Autenticar y obtener token
+            auth_response = await self.authenticate(credentials)
+            
+            if not auth_response.success or not auth_response.token_data:
+                raise SireAuthException("No se pudo obtener token SUNAT válido")
+            
+            logger.info(f"✅ [AUTH] Token SUNAT obtenido exitosamente para RUC {normalized_ruc}")
+            return auth_response.token_data.access_token
+            
+        except SireAuthException:
+            raise
+        except Exception as e:
+            logger.error(f"❌ [AUTH] Error obteniendo token para RUC {normalized_ruc}: {e}")
+            raise SireAuthException(f"Error inesperado: {str(e)}")

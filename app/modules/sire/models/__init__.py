@@ -22,6 +22,7 @@ from .rvie import (
 
 from .rce import (
     RceEstadoProceso,
+    RceEstadoComprobante,
     RceTipoComprobante,
     RceComprobante,
     RcePropuesta,

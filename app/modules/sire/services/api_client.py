@@ -31,12 +31,16 @@ class SunatApiClient:
         self.base_url = base_url or "https://api-sire.sunat.gob.pe/v1"
         self.auth_url = "https://api-seguridad.sunat.gob.pe/v1/clientessol"
         
-        # Endpoints específicos según manual SUNAT OFICIAL v25
+        # Endpoints específicos según manual SUNAT OFICIAL v25 (RVIE) y v27.0 (RCE)
         self.endpoints = {
-            # Autenticación
+            # ========================================
+            # AUTENTICACIÓN
+            # ========================================
             "auth_token": "/clientessol/{client_id}/oauth2/token",
             
-            # RVIE - Registro de Ventas e Ingresos Electrónico (URLs OFICIALES según Manual v25)
+            # ========================================
+            # RVIE - Registro de Ventas e Ingresos Electrónico (Manual v25)
+            # ========================================
             "rvie_consultar_periodos": "/contribuyente/migeigv/libros/rvierce/padron/web/omisos/140000/periodos",  # 5.2 según Manual v25
             "rvie_descargar_propuesta": "/contribuyente/migeigv/libros/rvie/propuesta/web/propuesta/{periodo}/exportapropuesta",  # URL CORRECTA línea 2893
             "rvie_aceptar_propuesta": "/contribuyente/migeigv/libros/rvie/propuesta/web/propuesta/{periodo}/aceptapropuesta",
@@ -45,16 +49,86 @@ class SunatApiClient:
             "rvie_inconsistencias": "/contribuyente/migeigv/libros/rvie/inconsistencias/web/inconsistenciascomprobantes",
             "rvie_resumen": "/contribuyente/migeigv/libros/rvie/resumen/web/resumencomprobantes/{periodo}/{codTipoResumen}/{codTipoArchivo}",
             
-            # Gestión de Tickets (URLs OFICIALES según Manual v25)
-            "consultar_ticket": "/contribuyente/migeigv/ticket/{ticket_id}/estado",
-            "descargar_archivo": "/contribuyente/migeigv/ticket/{ticket_id}/archivo/{nombre_archivo}",
+            # ========================================
+            # RCE - Registro de Compras Electrónico (Manual v27.0)
+            # ========================================
             
-            # RCE - Registro de Compras Electrónico (URLs OFICIALES)
-            "rce_descargar_propuesta": "/contribuyente/migeigv/libros/rce/propuesta/web/propuesta/{periodo}/exportacioncomprobantepropuesta/{codTipoArchivo}",
-            "rce_aceptar_propuesta": "/contribuyente/migeigv/libros/rce/propuesta/web/aceptarpropuesta",
-            "rce_resumen_consolidado": "/contribuyente/migeigv/libros/rce/resumen/web/resumencomprobantes/{periodo}/{codTipoResumen}/{codTipoArchivo}",
-            "rce_inconsistencias_montos": "/contribuyente/migeigv/libros/rce/inconsistencias/web/inconsistenciasmontostotales",
-            "rce_inconsistencias_comprobantes": "/contribuyente/migeigv/libros/rce/inconsistencias/web/inconsistenciascomprobantes"
+            # SERVICIOS PRINCIPALES (Sección 2 del manual)
+            "rce_aceptar_propuesta": "/contribuyente/migeigv/libros/rce/propuesta/web/aceptarpropuesta",  # 5.2
+            "rce_importar_reemplazo": "/contribuyente/migeigv/libros/rce/propuesta/web/reemplazarpropuesta",  # 5.3
+            "rce_registrar_preliminar": "/contribuyente/migeigv/libros/rce/preliminar/web/preliminarregistrado",  # 5.4
+            "rce_cargar_no_domiciliados": "/contribuyente/migeigv/libros/rce/preliminar/web/registrocomprasnodomiciliados",  # 5.5
+            
+            # SERVICIOS COMPLEMENTARIOS
+            "rce_importar_complementarios": "/contribuyente/migeigv/libros/rce/propuesta/web/datoscomplementarios",  # 5.6
+            "rce_importar_nuevos_comprobantes": "/contribuyente/migeigv/libros/rce/preliminar/web/importarnuevoscomprobantes",  # 5.7
+            "rce_incluir_excluir": "/contribuyente/migeigv/libros/rce/propuesta/web/incluirexcluircomprobante",  # 5.8
+            "rce_importar_nuevos_cp": "/contribuyente/migeigv/libros/rce/propuesta/web/importarnuevoscomprobantespago",  # 5.9
+            "rce_tipo_cambio_masivo": "/contribuyente/migeigv/libros/rce/propuesta/web/tipocambiomasivo",  # 5.10
+            "rce_reintegro_credito": "/contribuyente/migeigv/libros/rce/propuesta/web/reintegrocreditofiscal",  # 5.11
+            "rce_credito_especial": "/contribuyente/migeigv/libros/rce/propuesta/web/creditofiscalespecial",  # 5.12
+            "rce_coeficiente_prorrata": "/contribuyente/migeigv/libros/rce/propuesta/web/coeficienteprorrata",  # 5.13
+            "rce_consultar_fv0621": "/contribuyente/migeigv/libros/rce/propuesta/web/consultafv0621",  # 5.14
+            "rce_eliminar_comprobante_propuesta": "/contribuyente/migeigv/libros/rce/propuesta/web/eliminarcomprobante",  # 5.15
+            "rce_eliminar_comprobante_preliminar": "/contribuyente/migeigv/libros/rce/preliminar/web/eliminarcomprobante",  # 5.16
+            "rce_eliminar_preliminar": "/contribuyente/migeigv/libros/rce/preliminar/web/eliminarpreliminares",  # 5.17
+            
+            # AJUSTES POSTERIORES
+            "rce_cargar_ajustes": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/cargarajustesposteriores",  # 5.18
+            "rce_enviar_ajustes": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/enviarajustesposteriores",  # 5.19
+            "rce_eliminar_ajustes": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/eliminarcomprobante",  # 5.20
+            "rce_cargar_ajustes_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/cargarajustesposterioresnodomiciliados",  # 5.21
+            "rce_enviar_ajustes_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/enviarajustesposterioresnodomiciliados",  # 5.22
+            "rce_eliminar_ajustes_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/eliminarcomprobantenodomiciliado",  # 5.23
+            
+            # AJUSTES PERIODOS ANTERIORES
+            "rce_cargar_ajustes_anteriores": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/cargarajustesposterioresperiodosanteriores",  # 5.24
+            "rce_enviar_ajustes_anteriores": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/enviarajustesposterioresperiodosanteriores",  # 5.25
+            "rce_eliminar_ajustes_anteriores": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/eliminarcomprobanteperiodosanteriores",  # 5.26
+            "rce_cargar_ajustes_anteriores_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/cargarajustesposterioresperiodosanterioresnodomiciliados",  # 5.27
+            "rce_enviar_ajustes_anteriores_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/enviarajustesposterioresperiodosanterioresnodomiciliados",  # 5.28
+            "rce_eliminar_ajustes_anteriores_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/eliminarcomprobanteperiodosanterioresnodomiciliados",  # 5.29
+            
+            # CONSULTAS Y DESCARGAS
+            "rce_consultar_ano_mes": "/contribuyente/migeigv/libros/rce/consulta/web/consultaanomes",  # 5.33
+            "rce_descargar_propuesta": "/contribuyente/migeigv/libros/rce/propuesta/web/propuesta/{periodo}/exportacioncomprobantepropuesta/{codTipoArchivo}",  # 5.34
+            "rce_descargar_resumen": "/contribuyente/migeigv/libros/rce/resumen/web/resumencomprobantes/{periodo}/{codTipoArchivo}",  # 5.35
+            "rce_descargar_inconsistencias_rce": "/contribuyente/migeigv/libros/rce/inconsistencias/web/resumeninconsistenciasrce",  # 5.36
+            "rce_descargar_excluidos": "/contribuyente/migeigv/libros/rce/propuesta/web/excluidos",  # 5.37
+            "rce_eliminar_no_domiciliado": "/contribuyente/migeigv/libros/rce/preliminar/web/eliminarcomprobantenodomiciliado",  # 5.38
+            "rce_exportar_preliminar_no_dom": "/contribuyente/migeigv/libros/rce/preliminar/web/exportarpreliminareregistrocomprasnodomiciliados",  # 5.39
+            "rce_exportar_preliminar": "/contribuyente/migeigv/libros/rce/preliminar/web/exportarpreliminareregistrocompras",  # 5.40
+            "rce_descargar_casillas": "/contribuyente/migeigv/libros/rce/reporte/web/reportecasillas",  # 5.41
+            "rce_inconsistencias_preliminar": "/contribuyente/migeigv/libros/rce/inconsistencias/web/inconsistenciasregistropreliminareregistrado",  # 5.42
+            "rce_inconsistencias_montos": "/contribuyente/migeigv/libros/rce/inconsistencias/web/inconsistenciasmontostotales",  # 5.43
+            "rce_inconsistencias_comprobantes": "/contribuyente/migeigv/libros/rce/inconsistencias/web/inconsistenciascomprobantes",  # 5.44
+            
+            # DESCARGAS DE AJUSTES
+            "rce_descargar_ajustes": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/descargarajustesposteriores",  # 5.45
+            "rce_descargar_ajustes_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/descargarajustesposterioresnodomiciliados",  # 5.46
+            "rce_descargar_ajustes_anteriores": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/descargarajustesposterioresperiodosanteriores",  # 5.47
+            "rce_descargar_ajustes_anteriores_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/descargarajustesposterioresperiodosanterioresnodomiciliados",  # 5.48
+            
+            # REPORTES
+            "rce_constancia_recepcion": "/contribuyente/migeigv/libros/rce/reporte/web/constanciarecepcion",  # 5.49
+            "rce_reporte_consolidado": "/contribuyente/migeigv/libros/rce/reporte/web/reporteconsolidadoregistroperiodo",  # 5.50
+            "rce_descargar_periodo": "/contribuyente/migeigv/libros/rce/reporte/web/descargarrceperiodo",  # 5.51
+            "rce_reporte_inconsistencias_periodo": "/contribuyente/migeigv/libros/rce/reporte/web/reporteinconsistenciasperiodo",  # 5.52
+            "rce_reporte_car": "/contribuyente/migeigv/libros/rce/reporte/web/reportecar",  # 5.53
+            "rce_estadistico_proveedor": "/contribuyente/migeigv/libros/rce/reporte/web/reporteestadisticocomprasprovedorperiodo",  # 5.54
+            "rce_estadistico_nc_nd": "/contribuyente/migeigv/libros/rce/reporte/web/reporteestadisticonotacreditonotadebitoproveedorperiodo",  # 5.55
+            "rce_estadistico_dia": "/contribuyente/migeigv/libros/rce/reporte/web/reporteestadisticocomprasdiaperiodo",  # 5.56
+            "rce_estadistico_ciiu": "/contribuyente/migeigv/libros/rce/reporte/web/reporteestadisticocomprasciiu",  # 5.57
+            "rce_reporte_cumplimiento": "/contribuyente/migeigv/libros/rce/reporte/web/reportecumplimiento",  # 5.58
+            "rce_consultar_ajustes": "/contribuyente/migeigv/libros/rce/consulta/web/consultarajustesposterioresrce",  # 5.59
+            "rce_eliminar_preliminar_registrado": "/contribuyente/migeigv/libros/rce/preliminar/web/eliminarpreliminareregistrado",  # 5.60
+            "rce_consultar_preliminares": "/contribuyente/migeigv/libros/rce/consulta/web/consultarpreliminareregistrados",  # 5.61
+            
+            # ========================================
+            # TICKETS (Compartidos entre RVIE y RCE)
+            # ========================================
+            "consultar_ticket": "/contribuyente/migeigv/ticket/{ticket_id}/estado",  # 5.31
+            "descargar_archivo": "/contribuyente/migeigv/ticket/{ticket_id}/archivo/{nombre_archivo}"  # 5.32
         }
         
         self.timeout = timeout
@@ -377,3 +451,136 @@ class SunatApiClient:
             return response.status_code in [200, 401, 403]  # 401/403 indican que el servidor responde
         except Exception as e:
             return False
+
+    # =======================================
+    # MÉTODOS ESPECÍFICOS PARA RCE
+    # =======================================
+    
+    async def rce_propuesta_generar(self, token: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Generar propuesta RCE
+        """
+        return await self.post_with_auth(self.endpoints["rce_propuesta"], token, data)
+    
+    async def rce_propuesta_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Consultar propuesta RCE
+        """
+        return await self.get_with_auth(self.endpoints["rce_propuesta"], token, params)
+    
+    async def rce_propuesta_actualizar(self, token: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Actualizar propuesta RCE
+        """
+        return await self.put_with_auth(self.endpoints["rce_propuesta"], token, data)
+    
+    async def rce_propuesta_eliminar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Eliminar propuesta RCE
+        """
+        return await self.delete_with_auth(f"{self.endpoints['rce_propuesta']}?{self._build_query_string(params)}", token)
+    
+    async def rce_comprobante_eliminar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Eliminar comprobante RCE
+        """
+        return await self.delete_with_auth(f"{self.endpoints['rce_comprobante_eliminar']}?{self._build_query_string(params)}", token)
+    
+    async def rce_guia_insertar(self, token: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Insertar guía de remisión RCE
+        """
+        return await self.post_with_auth(self.endpoints["rce_guia_insertar"], token, data)
+    
+    async def rce_guia_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Consultar guía de remisión RCE
+        """
+        return await self.get_with_auth(self.endpoints["rce_guia_consultar"], token, params)
+    
+    async def rce_guia_actualizar(self, token: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Actualizar guía de remisión RCE
+        """
+        return await self.put_with_auth(self.endpoints["rce_guia_actualizar"], token, data)
+    
+    async def rce_guia_eliminar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Eliminar guía de remisión RCE
+        """
+        return await self.delete_with_auth(f"{self.endpoints['rce_guia_eliminar']}?{self._build_query_string(params)}", token)
+    
+    async def rce_proceso_enviar(self, token: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Enviar proceso RCE a SUNAT
+        """
+        return await self.post_with_auth(self.endpoints["rce_proceso_enviar"], token, data)
+    
+    async def rce_proceso_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Consultar estado del proceso RCE
+        """
+        return await self.get_with_auth(self.endpoints["rce_proceso_consultar"], token, params)
+    
+    async def rce_proceso_cancelar(self, token: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Cancelar proceso RCE
+        """
+        return await self.post_with_auth(self.endpoints["rce_proceso_cancelar"], token, data)
+    
+    async def rce_contribuyente_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Consultar datos del contribuyente RCE
+        """
+        return await self.get_with_auth(self.endpoints["rce_contribuyente_consultar"], token, params)
+    
+    async def rce_linea_detalle_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Consultar líneas de detalle RCE
+        """
+        return await self.get_with_auth(self.endpoints["rce_linea_detalle_consultar"], token, params)
+    
+    async def rce_comprobante_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Consultar comprobantes RCE
+        """
+        return await self.get_with_auth(self.endpoints["rce_comprobante_consultar"], token, params)
+    
+    async def rce_comprobante_resumen_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Consultar resumen de comprobantes RCE
+        """
+        return await self.get_with_auth(self.endpoints["rce_comprobante_resumen_consultar"], token, params)
+    
+    async def rce_descarga_masiva_solicitar(self, token: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Solicitar descarga masiva RCE
+        """
+        return await self.post_with_auth(self.endpoints["rce_descarga_masiva"], token, data)
+    
+    async def rce_descarga_masiva_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Consultar estado de descarga masiva RCE
+        """
+        return await self.get_with_auth(self.endpoints["rce_descarga_masiva"], token, params)
+    
+    async def rce_ticket_consultar(self, token: str, ticket_id: str) -> Dict[str, Any]:
+        """
+        Consultar estado de ticket RCE
+        """
+        params = {"ticket": ticket_id}
+        return await self.get_with_auth(self.endpoints["rce_ticket_consultar"], token, params)
+    
+    async def rce_archivo_descargar(self, token: str, params: Dict[str, Any]) -> bytes:
+        """
+        Descargar archivo RCE
+        """
+        endpoint = f"{self.endpoints['rce_descarga_archivo']}?{self._build_query_string(params)}"
+        return await self.download_file(endpoint, token)
+    
+    def _build_query_string(self, params: Dict[str, Any]) -> str:
+        """
+        Construir query string para parámetros
+        """
+        from urllib.parse import urlencode
+        return urlencode(params)

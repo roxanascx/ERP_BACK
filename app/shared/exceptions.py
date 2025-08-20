@@ -58,3 +58,45 @@ class InsufficientPermissionsException(UserException):
     """Cuando el usuario no tiene permisos suficientes"""
     def __init__(self):
         super().__init__("Permisos insuficientes", status.HTTP_403_FORBIDDEN)
+
+# Excepciones específicas de SIRE
+class SireException(ERPException):
+    """Excepción base para SIRE"""
+    pass
+
+class SireValidationException(SireException):
+    """Excepciones de validación SIRE"""
+    def __init__(self, detail: str, field: str = None):
+        if field:
+            detail = f"Error en campo '{field}': {detail}"
+        super().__init__(detail, status.HTTP_400_BAD_REQUEST)
+
+class SireAuthException(SireException):
+    """Excepciones de autenticación SIRE"""
+    def __init__(self, detail: str = "Error de autenticación SIRE"):
+        super().__init__(detail, status.HTTP_401_UNAUTHORIZED)
+
+class SireApiException(SireException):
+    """Excepciones de API SIRE"""
+    def __init__(self, detail: str, status_code: int = status.HTTP_503_SERVICE_UNAVAILABLE):
+        super().__init__(detail, status_code)
+
+class SireConnectionException(SireException):
+    """Excepciones de conexión SIRE"""
+    def __init__(self, detail: str = "Error de conexión con SIRE"):
+        super().__init__(detail, status.HTTP_503_SERVICE_UNAVAILABLE)
+
+class SireTimeoutException(SireException):
+    """Excepciones de timeout SIRE"""
+    def __init__(self, detail: str = "Timeout en consulta SIRE"):
+        super().__init__(detail, status.HTTP_504_GATEWAY_TIMEOUT)
+
+class SireNotFound(SireException):
+    """Cuando un recurso SIRE no existe"""
+    def __init__(self, resource: str, identifier: str):
+        super().__init__(f"{resource} no encontrado: {identifier}", status.HTTP_404_NOT_FOUND)
+
+class SireRateLimitException(SireException):
+    """Cuando se excede el límite de consultas SIRE"""
+    def __init__(self, detail: str = "Límite de consultas SIRE excedido"):
+        super().__init__(detail, status.HTTP_429_TOO_MANY_REQUESTS)
