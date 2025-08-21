@@ -10,6 +10,14 @@ from .auth import (
     SireAuthError
 )
 
+from .rce_comprobante_bd import (
+    RceComprobanteBD,
+    RceComprobanteBDCreate,
+    RceComprobanteBDResponse,
+    RceGuardarResponse,
+    RceEstadisticasBD
+)
+
 from .rvie import (
     RvieEstadoProceso,
     RvieTipoComprobante,

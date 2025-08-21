@@ -13,6 +13,7 @@ from ..modules.sire.routes import rce_resumen_routes as sire_rce_resumen_routes
 from ..modules.sire.routes import rce_procesos_routes as sire_rce_procesos_routes
 from ..modules.sire.routes import rce_consultas_routes as sire_rce_consultas_routes
 from ..modules.sire.routes import rce_data_routes as sire_rce_data_routes
+from ..modules.sire.routes import rce_comprobante_bd as sire_rce_bd_routes
 
 # Router principal que incluye todos los módulos
 api_router = APIRouter(prefix="/api/v1")
@@ -95,4 +96,11 @@ api_router.include_router(
     sire_rce_data_routes.router,
     prefix="/sire",
     tags=["SIRE-RCE-DataManagement"]
+)
+
+# Incluir rutas del módulo SIRE - RCE Base de Datos
+api_router.include_router(
+    sire_rce_bd_routes.router,
+    prefix="/sire/rce",
+    tags=["SIRE-RCE-BD"]
 )

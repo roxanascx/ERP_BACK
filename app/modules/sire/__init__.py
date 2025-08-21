@@ -14,11 +14,13 @@ from .services.api_client import SunatApiClient
 
 # Importar las rutas oficiales
 from .routes.rvie_ventas_routes import router as rvie_ventas_router
+from .routes.rce_comprobante_bd import router as rce_bd_router
 
 __all__ = [
     "SireAuthService",
     "RvieVentasService", 
     "SireTokenManager",
     "SunatApiClient",
-    "rvie_ventas_router"
+    "rvie_ventas_router",
+    "rce_bd_router"
 ]
