@@ -18,7 +18,8 @@ from ..services.rce_compras_service import RceComprasService
 from ..schemas.rce_schemas import (
     RceComprobanteCreateRequest, RceComprobanteResponse,
     RceConsultaRequest, RceConsultaResponse,
-    RceApiResponse, RceErrorResponse
+    RceApiResponse, RceErrorResponse,
+    RceComprobanteDetallado, RceComprobantesDetalladosResponse
 )
 
 # Configurar logging
@@ -51,15 +52,14 @@ async def obtener_resumen_periodo(
 ):
     """
     Obtener resumen del período RCE consultando directamente SUNAT
-    ✅ CONFIRMADO: Este endpoint SÍ se ejecuta correctamente
     """
-    print(f"🚀 [DEBUG] EJECUTANDO NUESTRO ENDPOINT PERSONALIZADO RESUMEN - RUC: {ruc}, Período: {periodo}")
-    logger.info(f"🚀 [DEBUG] EJECUTANDO NUESTRO ENDPOINT PERSONALIZADO RESUMEN - RUC: {ruc}, Período: {periodo}")
+    logger.info(f"Consultando resumen RCE para RUC {ruc}, período {periodo}")
     
     try:
         # Obtener token válido para SUNAT
         token = await service.auth_service.token_manager.get_valid_token(ruc)
         if not token:
+            logger.error(f"No se pudo obtener token SUNAT para RUC {ruc}")
             return {"error": "No se pudo obtener token SUNAT", "ruc": ruc}
 
         # Parámetros según el manual v27 - EXACTAMENTE como el script exitoso
@@ -72,9 +72,6 @@ async def obtener_resumen_periodo(
         cod_tipo_archivo = '0'  # TXT
         
         resumen_url = f'https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rvierce/resumen/web/resumencomprobantes/{periodo}/{cod_tipo_resumen}/{cod_tipo_archivo}/exporta'
-        
-        logger.info(f"🌐 [DEBUG] URL SUNAT: {resumen_url}")
-        logger.info(f"🌐 [DEBUG] Params: {resumen_params}")
         
         async with httpx.AsyncClient(timeout=30.0) as client:
             resumen_headers = {
@@ -89,11 +86,8 @@ async def obtener_resumen_periodo(
                 params=resumen_params
             )
             
-            logger.info(f"📊 [DEBUG] Status SUNAT: {resumen_response.status_code}")
-            
             if resumen_response.status_code == 200:
                 content = resumen_response.text
-                logger.info(f"📄 [DEBUG] Contenido: {content[:200]}...")
                 
                 # Parsear como lo hace el script exitoso
                 lineas = content.strip().split('\n')
@@ -115,7 +109,7 @@ async def obtener_resumen_periodo(
                 
                 return {
                     "exitoso": True,
-                    "mensaje": "✅ Resumen obtenido desde SUNAT correctamente",
+                    "mensaje": "Resumen obtenido desde SUNAT correctamente",
                     "ruc": ruc,
                     "periodo": periodo,
                     "datos": datos_total,
@@ -138,6 +132,305 @@ async def obtener_resumen_periodo(
         }
 
 # ===== FIN ENDPOINT DE RESUMEN =====
+
+
+# ===== ENDPOINT DE COMPROBANTES DETALLADOS =====
+
+@router.get(
+    "/comprobantes-detallados",
+    summary="Comprobantes detallados desde propuesta SUNAT",
+    description="Obtener lista detallada de comprobantes individuales con datos de proveedor"
+)
+async def obtener_comprobantes_detallados(
+    ruc: str = Query(..., description="RUC del contribuyente"),
+    periodo: str = Query(..., description="Período en formato YYYYMM"),
+    service: RceComprasService = Depends(get_rce_compras_service)
+):
+    """
+    Obtener comprobantes detallados descargando la propuesta SUNAT
+    Incluye RUC y razón social del proveedor para cada comprobante
+    """
+    logger.info(f"Consultando comprobantes detallados para RUC {ruc}, período {periodo}")
+    
+    try:
+        # Obtener token válido para SUNAT
+        token = await service.auth_service.token_manager.get_valid_token(ruc)
+        if not token:
+            logger.error(f"No se pudo obtener token SUNAT para RUC {ruc}")
+            return {"error": "No se pudo obtener token SUNAT", "ruc": ruc}
+
+        # PASO 1: Solicitar generación de propuesta
+        propuesta_url = f'https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rce/propuesta/web/propuesta/{periodo}/exportacioncomprobantepropuesta'
+        
+        propuesta_params = {
+            'codTipoArchivo': '0',  # 0: txt, 1: csv
+            'codOrigenEnvio': '2'   # 2: Servicio API
+        }
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            propuesta_headers = {
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+            
+            propuesta_response = await client.get(
+                propuesta_url, 
+                headers=propuesta_headers, 
+                params=propuesta_params
+            )
+            
+            if propuesta_response.status_code != 200:
+                return {
+                    "exitoso": False,
+                    "mensaje": f"Error obteniendo propuesta SUNAT {propuesta_response.status_code}",
+                    "detalle": propuesta_response.text
+                }
+            
+            response_json = propuesta_response.json()
+            
+            if 'numTicket' not in response_json:
+                return {
+                    "exitoso": False,
+                    "mensaje": "No se recibió ticket de SUNAT",
+                    "detalle": response_json
+                }
+            
+            ticket = response_json['numTicket']
+            
+            # PASO 2: Esperar un momento y consultar estado del ticket
+            import asyncio
+            await asyncio.sleep(2)  # Dar tiempo a SUNAT para procesar
+            
+            # PASO 3: Consultar estado del ticket y archivos disponibles
+            consulta_url = "https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rvierce/gestionprocesosmasivos/web/masivo/consultaestadotickets"
+            
+            consulta_params = {
+                'perIni': periodo,
+                'perFin': periodo,
+                'page': 1,
+                'perPage': 20,
+                'codLibro': '080000',
+                'codOrigenEnvio': '2'
+            }
+            
+            consulta_response = await client.get(
+                consulta_url,
+                headers=propuesta_headers,
+                params=consulta_params
+            )
+            
+            if consulta_response.status_code != 200:
+                return {
+                    "exitoso": False,
+                    "mensaje": f"Error consultando estado {consulta_response.status_code}",
+                    "ticket": ticket
+                }
+            
+            consulta_data = consulta_response.json()
+            
+            # PASO 4: Buscar el archivo correspondiente al ticket
+            archivo_info = None
+            for registro in consulta_data.get('registros', []):
+                if (registro.get('numTicket') == ticket and 
+                    registro.get('desEstadoProceso') == 'Terminado'):
+                    
+                    archivos = registro.get('archivoReporte', [])
+                    if archivos:
+                        archivo_info = {
+                            'ticket': ticket,
+                            'periodo': periodo,
+                            'proceso': registro.get('codProceso'),
+                            'archivo': archivos[0].get('nomArchivoReporte'),
+                            'tipo': archivos[0].get('codTipoAchivoReporte')
+                        }
+                        break
+            
+            if not archivo_info:
+                return {
+                    "exitoso": False,
+                    "mensaje": "Archivo aún no está listo o no se encontró",
+                    "ticket": ticket,
+                    "nota": "Intente nuevamente en unos minutos"
+                }
+            
+            # PASO 5: Descargar el archivo
+            descarga_url = "https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rvierce/gestionprocesosmasivos/web/masivo/archivoreporte"
+            
+            descarga_params = {
+                'nomArchivoReporte': archivo_info['archivo'],
+                'codTipoArchivoReporte': archivo_info['tipo'],
+                'perTributario': archivo_info['periodo'],
+                'codProceso': archivo_info['proceso'],
+                'numTicket': archivo_info['ticket'],
+                'codLibro': '080000'
+            }
+            
+            descarga_response = await client.get(
+                descarga_url,
+                headers=propuesta_headers,
+                params=descarga_params
+            )
+            
+            if descarga_response.status_code != 200:
+                return {
+                    "exitoso": False,
+                    "mensaje": f"Error descargando archivo {descarga_response.status_code}",
+                    "archivo_info": archivo_info
+                }
+            
+            # PASO 6: Parsear el contenido del archivo
+            contenido_archivo = descarga_response.content  # Usar .content en lugar de .text para archivos binarios
+            
+            # PASO 7: Descomprimir ZIP si es necesario
+            contenido_texto = ""
+            if archivo_info['archivo'].endswith('.zip'):
+                import zipfile
+                import io
+                
+                try:
+                    with zipfile.ZipFile(io.BytesIO(contenido_archivo), 'r') as zip_file:
+                        # Listar archivos en el ZIP
+                        archivos_zip = zip_file.namelist()
+                        
+                        # Buscar el archivo TXT
+                        archivo_txt = None
+                        for archivo in archivos_zip:
+                            if archivo.endswith('.txt'):
+                                archivo_txt = archivo
+                                break
+                        
+                        if archivo_txt:
+                            with zip_file.open(archivo_txt) as txt_file:
+                                contenido_texto = txt_file.read().decode('utf-8')
+                        else:
+                            return {
+                                "exitoso": False,
+                                "mensaje": "No se encontró archivo TXT en el ZIP",
+                                "archivos_zip": archivos_zip
+                            }
+                except Exception as e:
+                    return {
+                        "exitoso": False,
+                        "mensaje": f"Error descomprimiendo ZIP: {str(e)}",
+                        "archivo": archivo_info['archivo']
+                    }
+            else:
+                # Si no es ZIP, asumir que es texto plano
+                contenido_texto = contenido_archivo.decode('utf-8')
+            
+            # PASO 8: Parsear las líneas del archivo de propuesta
+            lineas = contenido_texto.strip().split('\n')
+            
+            if len(lineas) < 2:
+                return {
+                    "exitoso": False,
+                    "mensaje": "Archivo no contiene datos suficientes",
+                    "total_lineas": len(lineas)
+                }
+            
+            # PASO 9: Parsear headers y datos
+            headers = lineas[0].split('|')
+            comprobantes_data = []
+            
+            # Mapear índices de campos importantes
+            indices = {}
+            campos_importantes = {
+                'ruc_proveedor': 'Nro Doc Identidad',
+                'razon_social_proveedor': 'Apellidos Nombres/ Razón  Social',
+                'fecha_emision': 'Fecha de emisión',
+                'tipo_documento': 'Tipo CP/Doc.',
+                'serie': 'Serie del CDP',
+                'numero': 'Nro CP o Doc. Nro Inicial (Rango)',
+                'total_cp': 'Total CP',
+                'moneda': 'Moneda',
+                'tipo_cambio': 'Tipo de Cambio',
+                'bi_gravado': 'BI Gravado DG',
+                'igv': 'IGV / IPM DG',
+                'valor_no_gravado': 'Valor Adq. NG',
+                'isc': 'ISC',
+                'icbper': 'ICBPER',
+                'otros_tributos': 'Otros Trib/ Cargos'
+            }
+            
+            # Encontrar índices de los campos
+            for campo, header_name in campos_importantes.items():
+                try:
+                    indices[campo] = headers.index(header_name)
+                except ValueError:
+                    logger.warning(f"⚠️  Campo '{header_name}' no encontrado en headers")
+                    indices[campo] = -1
+            
+            # Procesar cada línea de datos (omitir header)
+            for i, linea in enumerate(lineas[1:], 1):
+                campos = linea.split('|')
+                
+                # Asegurarse de que la línea tenga suficientes campos
+                if len(campos) < len(headers):
+                    logger.warning(f"⚠️  Línea {i} incompleta: {len(campos)} campos vs {len(headers)} esperados")
+                    continue
+                
+                try:
+                    # Extraer datos del comprobante
+                    comprobante = {
+                        'ruc_proveedor': campos[indices['ruc_proveedor']] if indices['ruc_proveedor'] >= 0 else '',
+                        'razon_social_proveedor': campos[indices['razon_social_proveedor']] if indices['razon_social_proveedor'] >= 0 else '',
+                        'fecha_emision': campos[indices['fecha_emision']] if indices['fecha_emision'] >= 0 else '',
+                        'tipo_documento': campos[indices['tipo_documento']] if indices['tipo_documento'] >= 0 else '',
+                        'serie_comprobante': campos[indices['serie']] if indices['serie'] >= 0 else '',
+                        'numero_comprobante': campos[indices['numero']] if indices['numero'] >= 0 else '',
+                        'moneda': campos[indices['moneda']] if indices['moneda'] >= 0 else 'PEN',
+                        'tipo_cambio': float(campos[indices['tipo_cambio']]) if indices['tipo_cambio'] >= 0 and campos[indices['tipo_cambio']] else 1.0,
+                        'base_imponible_gravada': float(campos[indices['bi_gravado']]) if indices['bi_gravado'] >= 0 and campos[indices['bi_gravado']] else 0.0,
+                        'igv': float(campos[indices['igv']]) if indices['igv'] >= 0 and campos[indices['igv']] else 0.0,
+                        'valor_adquisicion_no_gravada': float(campos[indices['valor_no_gravado']]) if indices['valor_no_gravado'] >= 0 and campos[indices['valor_no_gravado']] else 0.0,
+                        'isc': float(campos[indices['isc']]) if indices['isc'] >= 0 and campos[indices['isc']] else 0.0,
+                        'icbper': float(campos[indices['icbper']]) if indices['icbper'] >= 0 and campos[indices['icbper']] else 0.0,
+                        'otros_tributos': float(campos[indices['otros_tributos']]) if indices['otros_tributos'] >= 0 and campos[indices['otros_tributos']] else 0.0,
+                        'importe_total': float(campos[indices['total_cp']]) if indices['total_cp'] >= 0 and campos[indices['total_cp']] else 0.0,
+                        'periodo': periodo
+                    }
+                    
+                    comprobantes_data.append(comprobante)
+                    
+                except (ValueError, IndexError) as e:
+                    logger.warning(f"⚠️  Error procesando línea {i}: {str(e)}")
+                    continue
+            
+            # PASO 10: Calcular totales
+            total_base_imponible = sum(comp['base_imponible_gravada'] for comp in comprobantes_data)
+            total_igv = sum(comp['igv'] for comp in comprobantes_data)
+            total_general = sum(comp['importe_total'] for comp in comprobantes_data)
+            
+            return {
+                "exitoso": True,
+                "mensaje": f"{len(comprobantes_data)} comprobantes procesados correctamente",
+                "ruc": ruc,
+                "periodo": periodo,
+                "ticket": ticket,
+                "archivo": archivo_info['archivo'],
+                "total_comprobantes": len(comprobantes_data),
+                "comprobantes": comprobantes_data,
+                "totales": {
+                    "total_base_imponible": total_base_imponible,
+                    "total_igv": total_igv,
+                    "total_general": total_general
+                },
+                "debug": {
+                    "headers_encontrados": len(headers),
+                    "campos_mapeados": {k: v for k, v in indices.items() if v >= 0}
+                }
+            }
+                
+    except Exception as e:
+        logger.error(f"💥 [DEBUG] Error comprobantes detallados: {str(e)}")
+        return {
+            "exitoso": False,
+            "error": str(e),
+            "mensaje": "Error en endpoint comprobantes detallados"
+        }
+
+# ===== FIN ENDPOINT DE COMPROBANTES DETALLADOS =====
 
 
 @router.post(

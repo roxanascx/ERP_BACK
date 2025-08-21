@@ -21,6 +21,7 @@ from ..schemas.rce_schemas import (
 from ..services.api_client import SunatApiClient
 from ..services.auth_service import SireAuthService
 from ....shared.exceptions import SireException, SireValidationException
+from .rce_data_manager import RceDataManager
 
 
 class RceComprasService:
@@ -31,6 +32,13 @@ class RceComprasService:
         self.api_client = api_client
         self.auth_service = auth_service
         self.collection = database.rce_comprobantes
+        
+        # Nuevo data manager para gestión avanzada de datos
+        self.data_manager = RceDataManager()
+        
+    async def initialize(self):
+        """Inicializar servicio y manager de datos"""
+        await self.data_manager.inicializar()
         
     async def crear_comprobante(
         self, 
@@ -528,3 +536,51 @@ class RceComprasService:
             credito_fiscal_calculado=Decimal(str(credito_fiscal)) if credito_fiscal else None,
             monto_detraccion=Decimal(str(comprobante_dict.get("monto_detraccion", 0))) if comprobante_dict.get("monto_detraccion") else None
         )
+
+    # ========================================
+    # MÉTODOS USANDO DATA MANAGER (NUEVOS)
+    # ========================================
+    
+    async def importar_comprobantes_sunat(
+        self, 
+        ruc: str, 
+        periodo: str,
+        datos_sunat: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Importar comprobantes desde datos de SUNAT usando el data manager"""
+        return await self.data_manager.importar_comprobantes_masivo(ruc, periodo, datos_sunat)
+    
+    async def obtener_resumen_periodo_avanzado(self, ruc: str, periodo: str) -> Dict[str, Any]:
+        """Obtener resumen avanzado del período usando el data manager"""
+        resumen = await self.data_manager.obtener_resumen_periodo(ruc, periodo)
+        return resumen.dict()
+    
+    async def obtener_estadisticas_proveedores(self, ruc: str, periodo: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Obtener estadísticas por proveedor usando el data manager"""
+        estadisticas = await self.data_manager.obtener_estadisticas_proveedores(ruc, periodo, limit)
+        return [est.dict() for est in estadisticas]
+    
+    async def validar_comprobantes_periodo(self, ruc: str, periodo: str) -> Dict[str, Any]:
+        """Validar todos los comprobantes de un período"""
+        return await self.data_manager.validar_comprobantes_periodo(ruc, periodo)
+    
+    async def comparar_con_sunat(self, ruc: str, periodo: str, datos_sunat: Dict[str, Any]) -> Dict[str, Any]:
+        """Comparar datos locales con resumen de SUNAT"""
+        return await self.data_manager.comparar_con_sunat(ruc, periodo, datos_sunat)
+    
+    async def configurar_periodo(self, ruc: str, periodo: str, configuracion: Dict[str, Any]) -> Dict[str, Any]:
+        """Configurar un período específico"""
+        config = await self.data_manager.configurar_periodo(ruc, periodo, configuracion)
+        return config.dict()
+    
+    async def cerrar_periodo(self, ruc: str, periodo: str) -> bool:
+        """Cerrar un período (no permitir más modificaciones)"""
+        return await self.data_manager.cerrar_periodo(ruc, periodo)
+    
+    async def obtener_logs_periodo(self, ruc: str, periodo: str, skip: int = 0, limit: int = 100) -> Dict[str, Any]:
+        """Obtener logs de operaciones del período"""
+        logs, total = await self.data_manager.obtener_logs_periodo(ruc, periodo, skip, limit)
+        return {
+            "logs": [log.dict() for log in logs],
+            "total": total
+        }

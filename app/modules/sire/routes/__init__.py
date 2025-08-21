@@ -13,6 +13,7 @@ from .rce_comprobantes_routes import router as rce_comprobantes_router
 from .rce_propuestas_routes import router as rce_propuestas_router
 from .rce_procesos_routes import router as rce_procesos_router
 from .rce_consultas_routes import router as rce_consultas_router
+from .rce_data_routes import router as rce_data_router
 
 # Lista de todos los routers del módulo SIRE
 sire_routers = [
@@ -26,6 +27,8 @@ sire_routers = [
     rce_propuestas_router,
     rce_procesos_router,
     rce_consultas_router,
+    # Rutas RCE Data Management - Gestión avanzada de datos
+    rce_data_router,
 ]
 
 __all__ = [

@@ -478,3 +478,62 @@ class RceValidationUtils:
                 raise ValueError('DNI debe tener 8 dígitos')
         
         return numero
+
+
+# =======================================
+# SCHEMAS PARA COMPROBANTES DETALLADOS
+# =======================================
+
+class RceComprobanteDetallado(BaseModel):
+    """Comprobante detallado desde propuesta SUNAT"""
+    # Información del proveedor
+    ruc_proveedor: str = Field(..., description="RUC del proveedor")
+    razon_social_proveedor: str = Field(..., description="Razón social del proveedor")
+    
+    # Información del comprobante
+    tipo_documento: str = Field(..., description="Tipo de documento")
+    serie_comprobante: str = Field(..., description="Serie del comprobante")
+    numero_comprobante: str = Field(..., description="Número del comprobante")
+    fecha_emision: str = Field(..., description="Fecha de emisión")
+    fecha_vencimiento: Optional[str] = Field(None, description="Fecha de vencimiento")
+    
+    # Montos
+    moneda: str = Field(..., description="Código de moneda")
+    tipo_cambio: Optional[Decimal] = Field(None, description="Tipo de cambio")
+    base_imponible_gravada: Decimal = Field(default=Decimal("0.00"), description="Base imponible gravada")
+    igv: Decimal = Field(default=Decimal("0.00"), description="IGV")
+    valor_adquisicion_no_gravada: Decimal = Field(default=Decimal("0.00"), description="Valor adquisición no gravada")
+    isc: Decimal = Field(default=Decimal("0.00"), description="ISC")
+    icbper: Decimal = Field(default=Decimal("0.00"), description="ICBPER")
+    otros_tributos: Decimal = Field(default=Decimal("0.00"), description="Otros tributos")
+    importe_total: Decimal = Field(..., description="Importe total")
+    
+    # Información adicional
+    periodo: str = Field(..., description="Período tributario")
+    car_sunat: Optional[str] = Field(None, description="CAR SUNAT")
+    numero_dua: Optional[str] = Field(None, description="Número DUA")
+    
+    class Config:
+        json_encoders = {
+            Decimal: lambda v: float(v)  # Convertir Decimal a float para JSON
+        }
+
+
+class RceComprobantesDetalladosResponse(BaseModel):
+    """Response para lista de comprobantes detallados"""
+    exitoso: bool = Field(..., description="Operación exitosa")
+    mensaje: str = Field(..., description="Mensaje descriptivo")
+    total_comprobantes: int = Field(..., description="Total de comprobantes")
+    periodo: str = Field(..., description="Período consultado")
+    ruc: str = Field(..., description="RUC consultado")
+    comprobantes: List[RceComprobanteDetallado] = Field(..., description="Lista de comprobantes detallados")
+    
+    # Totales agregados
+    total_base_imponible: Decimal = Field(default=Decimal("0.00"), description="Total base imponible")
+    total_igv: Decimal = Field(default=Decimal("0.00"), description="Total IGV")
+    total_general: Decimal = Field(default=Decimal("0.00"), description="Total general")
+    
+    class Config:
+        json_encoders = {
+            Decimal: lambda v: float(v)
+        }

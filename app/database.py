@@ -46,3 +46,7 @@ async def get_database_async():
         await connect_to_mongo()
     
     return database
+
+async def get_database_connection():
+    """Obtener conexión a la base de datos para dependencias"""
+    return await get_database_async()
