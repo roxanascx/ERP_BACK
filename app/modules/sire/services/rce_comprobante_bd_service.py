@@ -65,8 +65,8 @@ class RceComprobanteBDService:
             tipo_documento=comp_sunat.get("tipo_documento", "01"),
             serie_comprobante=comp_sunat.get("serie_comprobante", ""),
             numero_comprobante=comp_sunat.get("numero_comprobante", ""),
-            fecha_emision=comp_sunat.get("fecha_emision", ""),
-            fecha_vencimiento=comp_sunat.get("fecha_vencimiento"),
+            fecha_emision=self._normalizar_fecha(comp_sunat.get("fecha_emision", "")),
+            fecha_vencimiento=self._normalizar_fecha(comp_sunat.get("fecha_vencimiento", "")) if comp_sunat.get("fecha_vencimiento") else None,
             moneda=comp_sunat.get("moneda", "PEN"),
             tipo_cambio=Decimal(str(comp_sunat.get("tipo_cambio", 1.0))),
             base_imponible_gravada=Decimal(str(comp_sunat.get("base_imponible_gravada", 0))),
@@ -338,6 +338,57 @@ class RceComprobanteBDService:
         except Exception as e:
             raise SireException(f"Error guardando comprobantes desde cache: {str(e)}")
     
+    def _normalizar_fecha(self, fecha_str: str) -> str:
+        """
+        Normalizar fecha a formato YYYY-MM-DD
+        
+        Args:
+            fecha_str: Fecha en cualquier formato
+            
+        Returns:
+            str: Fecha en formato YYYY-MM-DD o cadena vacía si es inválida
+        """
+        if not fecha_str or fecha_str.strip() == '':
+            return ""
+            
+        try:
+            from datetime import datetime
+            
+            # Limpiar espacios
+            fecha_str = fecha_str.strip()
+            
+            # Si ya está en formato correcto YYYY-MM-DD
+            if len(fecha_str) == 10 and fecha_str.count('-') == 2:
+                year, month, day = fecha_str.split('-')
+                if len(year) == 4 and len(month) == 2 and len(day) == 2:
+                    # Validar que sea una fecha válida
+                    datetime.strptime(fecha_str, '%Y-%m-%d')
+                    return fecha_str
+            
+            # Intentar diferentes formatos
+            formatos = [
+                '%Y-%m-%d',      # 2025-07-15
+                '%d/%m/%Y',      # 15/07/2025
+                '%Y/%m/%d',      # 2025/07/15
+                '%Y-%m-%dT%H:%M:%S',  # ISO con tiempo
+                '%Y-%m-%dT%H:%M:%S.%f',  # ISO con microsegundos
+            ]
+            
+            for formato in formatos:
+                try:
+                    fecha_obj = datetime.strptime(fecha_str.split('T')[0] if 'T' in fecha_str else fecha_str, formato.split('T')[0] if 'T' in formato else formato)
+                    return fecha_obj.strftime('%Y-%m-%d')
+                except ValueError:
+                    continue
+            
+            # Si no se pudo convertir, devolver cadena vacía
+            print(f"⚠️ Fecha no válida encontrada: {fecha_str}")
+            return ""
+            
+        except Exception as e:
+            print(f"❌ Error normalizando fecha {fecha_str}: {str(e)}")
+            return ""
+
     def _convertir_comprobante_a_bd(
         self, 
         ruc: str, 
@@ -396,17 +447,17 @@ class RceComprobanteBDService:
                     comp_data.get("numero_comprobante") or 
                     ""
                 ),
-                fecha_emision=(
+                fecha_emision=self._normalizar_fecha(
                     comp_data.get("fechaEmision") or 
                     comp_data.get("fecha_emision") or 
                     comp_data.get("fecha") or 
                     ""
                 ),
-                fecha_vencimiento=(
+                fecha_vencimiento=self._normalizar_fecha(
                     comp_data.get("fechaVencimiento") or 
                     comp_data.get("fecha_vencimiento") or 
-                    None
-                ),
+                    ""
+                ) if (comp_data.get("fechaVencimiento") or comp_data.get("fecha_vencimiento")) else None,
                 moneda=comp_data.get("moneda") or "PEN",
                 tipo_cambio=Decimal(str(
                     comp_data.get("tipoCambio") or 

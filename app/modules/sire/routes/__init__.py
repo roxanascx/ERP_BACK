@@ -16,6 +16,9 @@ from .rce_consultas_routes import router as rce_consultas_router
 from .rce_data_routes import router as rce_data_router
 from .rce_comprobante_bd import router as rce_comprobante_bd_router
 
+# Importar nuevas rutas RVIE BD
+from .rvie_comprobante_bd import router as rvie_comprobante_bd_router
+
 # Lista de todos los routers del módulo SIRE
 sire_routers = [
     auth_router,
@@ -32,6 +35,8 @@ sire_routers = [
     rce_data_router,
     # Rutas RCE Base de Datos - Gestión de comprobantes almacenados
     rce_comprobante_bd_router,
+    # Rutas RVIE Base de Datos - Gestión de comprobantes de ventas almacenados
+    rvie_comprobante_bd_router,
 ]
 
 __all__ = [
@@ -46,5 +51,6 @@ __all__ = [
     "rce_procesos_router",
     "rce_consultas_router",
     "rce_data_router",
-    "rce_comprobante_bd_router"
+    "rce_comprobante_bd_router",
+    "rvie_comprobante_bd_router"
 ]

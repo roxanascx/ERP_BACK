@@ -138,9 +138,9 @@ async def list_companies(
 ):
     """Listar empresas con filtros opcionales"""
     try:
-        print(f"📋 [LIST] Iniciando list_companies - skip:{skip}, limit:{limit}")
+        # print(f"📋 [LIST] Iniciando list_companies - skip:{skip}, limit:{limit}")
         result = await service.list_companies(skip, limit, activas_only, con_sire_only)
-        print(f"✅ [LIST] list_companies exitoso - {len(result.companies)} empresas")
+        # print(f"✅ [LIST] list_companies exitoso - {len(result.companies)} empresas")
         return result
     except Exception as e:
         print(f"❌ [LIST] Error en list_companies: {type(e).__name__}: {str(e)}")

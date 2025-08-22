@@ -57,7 +57,7 @@ async def consultar_comprobantes(
     fecha_hasta: Optional[str] = Query(None, description="Fecha hasta YYYY-MM-DD"),
     estado: Optional[str] = Query(None, description="Estado del comprobante"),
     pagina: int = Query(1, ge=1, description="Número de página"),
-    por_pagina: int = Query(50, ge=1, le=500, description="Comprobantes por página"),
+    por_pagina: int = Query(50, ge=1, le=2000, description="Comprobantes por página"),
     service: RceComprobanteBDService = Depends(get_rce_comprobante_service)
 ):
     """Consultar comprobantes con filtros"""

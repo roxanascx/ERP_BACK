@@ -208,7 +208,7 @@ class SireAuthService:
             servicios_disponibles = ["RVIE", "RCE"] if api_available else []
             servicios_activos = servicios_disponibles if session_active else []
             
-            logger.info(f"📊 [AUTH] Status para RUC {ruc}: sesion_activa={session_active}, token_expira_en={token_expires_in}")
+            # logger.info(f"📊 [AUTH] Status para RUC {ruc}: sesion_activa={session_active}, token_expira_en={token_expires_in}")
             
             return SireStatusResponse(
                 ruc=ruc,

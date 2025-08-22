@@ -15,6 +15,9 @@ from ..modules.sire.routes import rce_consultas_routes as sire_rce_consultas_rou
 from ..modules.sire.routes import rce_data_routes as sire_rce_data_routes
 from ..modules.sire.routes import rce_comprobante_bd as sire_rce_bd_routes
 
+# Importar nuevas rutas RVIE BD
+from ..modules.sire.routes import rvie_comprobante_bd as sire_rvie_bd_routes
+
 # Router principal que incluye todos los módulos
 api_router = APIRouter(prefix="/api/v1")
 
@@ -103,4 +106,11 @@ api_router.include_router(
     sire_rce_bd_routes.router,
     prefix="/sire/rce",
     tags=["SIRE-RCE-BD"]
+)
+
+# Incluir rutas del módulo SIRE - RVIE Base de Datos
+api_router.include_router(
+    sire_rvie_bd_routes.router,
+    prefix="/sire/rvie",
+    tags=["SIRE-RVIE-BD"]
 )
