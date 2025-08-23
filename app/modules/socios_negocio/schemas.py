@@ -1,5 +1,5 @@
 from datetime import datetime, date
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 
 # ==========================================
@@ -126,6 +126,10 @@ class ConsultaRucRequest(BaseModel):
     """Esquema para solicitud de consulta RUC"""
     ruc: str = Field(..., pattern=r'^\d{11}$', description="RUC de 11 dígitos")
 
+class ConsultaDniRequest(BaseModel):
+    """Esquema para solicitud de consulta DNI"""
+    dni: str = Field(..., pattern=r'^\d{8}$', description="DNI de 8 dígitos")
+
 class ConsultaRucResponse(BaseModel):
     """Esquema de respuesta para consulta RUC"""
     success: bool
@@ -133,7 +137,16 @@ class ConsultaRucResponse(BaseModel):
     data: Optional['DatosSunatResponse'] = None
     error: Optional[str] = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-    metodo: Optional[str] = Field(None, description="Método utilizado para la consulta")  # ✅ NUEVO
+    metodo: Optional[str] = Field(None, description="Método utilizado para la consulta")
+
+class ConsultaDniResponse(BaseModel):
+    """Esquema de respuesta para consulta DNI"""
+    success: bool
+    dni: str
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    metodo: Optional[str] = Field(None, description="Método utilizado para la consulta")
 
 class SocioCreateFromRucRequest(BaseModel):
     """Esquema para crear socio desde consulta RUC"""

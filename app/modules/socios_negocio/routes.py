@@ -1,6 +1,6 @@
 """
 Rutas API para el módulo de Socios de Negocio
-Incluye integración con servicios SIRE para consultas RUC oficiales
+Funcionalidad básica sin integración SIRE (temporalmente removida)
 """
 
 from typing import List, Optional, Dict, Any
@@ -14,6 +14,7 @@ from .models import SocioNegocioModel
 from .schemas import (
     SocioNegocioCreate, SocioNegocioUpdate, SocioNegocioResponse,
     SocioListResponse, ConsultaRucRequest, ConsultaRucResponse,
+    ConsultaDniRequest, ConsultaDniResponse,
     SocioStatsResponse, SocioCreateFromRucRequest
 )
 from .repositories import SocioNegocioRepository
@@ -23,48 +24,14 @@ from .exceptions import (
     SocioValidationException, RucConsultaException
 )
 
-# ✅ NUEVAS IMPORTACIONES: Servicios SIRE
-from ..sire.services.ruc_consulta_service import SireRucConsultaService
-from ..sire.services.auth_service import SireAuthService
-from ..sire.services.api_client import SunatApiClient
-from ..sire.services.token_manager import SireTokenManager
-from ..companies.services import CompanyService
-
 router = APIRouter(prefix="/socios-negocio", tags=["Socios de Negocio"])
 
-async def get_sire_ruc_service(db: AsyncIOMotorDatabase = Depends(get_database_async)) -> SireRucConsultaService:
-    """Dependency para obtener el servicio SIRE RUC (requerido)"""
-    try:
-        # Inicializar servicios SIRE
-        api_client = SunatApiClient()
-        token_manager = SireTokenManager(mongo_collection=db.sire_sessions)  # ✅ CORREGIDO
-        auth_service = SireAuthService(api_client, token_manager)
-        company_service = CompanyService()
-        
-        # Crear servicio de consulta RUC
-        sire_ruc_service = SireRucConsultaService(
-            api_client=api_client,
-            auth_service=auth_service,
-            token_manager=token_manager,
-            company_service=company_service
-        )
-        
-        return sire_ruc_service
-        
-    except Exception as e:
-        # ❌ ERROR CRÍTICO: SIRE es requerido
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Servicio SIRE requerido no disponible: {e}"
-        )
-
 async def get_socio_service(
-    db: AsyncIOMotorDatabase = Depends(get_database_async),
-    sire_ruc_service: SireRucConsultaService = Depends(get_sire_ruc_service)  # ✅ REQUERIDO
+    db: AsyncIOMotorDatabase = Depends(get_database_async)
 ) -> SocioNegocioService:
-    """Dependency para obtener el servicio de socios con integración SIRE obligatoria"""
+    """Dependency para obtener el servicio de socios (sin integración SIRE)"""
     repository = SocioNegocioRepository(db)
-    return SocioNegocioService(repository, sire_ruc_service)  # ✅ SIRE obligatorio
+    return SocioNegocioService(repository)
 
 # Endpoint de salud del módulo
 @router.get(
@@ -77,40 +44,52 @@ async def health_check():
     return {
         "status": "healthy",
         "module": "socios_negocio",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "consulta_ruc": "apis_publicas_disponibles"
     }
 
-# ✅ ENDPOINT: Verificar disponibilidad de consultas RUC oficiales (obligatorio)
 @router.get(
-    "/sire-status",
-    summary="Verificar disponibilidad de consultas RUC oficiales SIRE"
+    "/status",
+    summary="Estado y capacidades del módulo"
 )
-async def verificar_sire_status(
-    sire_ruc_service: SireRucConsultaService = Depends(get_sire_ruc_service)
-):
+async def get_module_status():
     """
-    Verifica el estado del servicio SIRE para consultas RUC oficiales
+    Obtiene el estado actual y capacidades disponibles del módulo
     
     Returns:
-        Información sobre disponibilidad y estado de autenticación SIRE
+        Información sobre funcionalidades disponibles y estado de integración
     """
-    try:
-        status = await sire_ruc_service.verificar_disponibilidad_api()
-        return {
-            "disponible": status["disponible"],
-            "empresa": status.get("empresa"),
-            "sesion_activa": status.get("sesion_activa", False),
-            "servicios_activos": status.get("servicios_activos", []),
-            "token_expira_en": status.get("token_expira_en"),
-            "metodos_disponibles": ["SIRE_OAUTH2_OFICIAL"] if status["disponible"] else [],
-            "scraping_eliminado": True,
-            "solo_api_oficial": True
-        }
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Error verificando servicio SIRE: {str(e)}"
-        )
+    return {
+        "modulo": "socios_negocio",
+        "version": "1.0.0",
+        "estado": "operativo",
+        "funcionalidades_disponibles": {
+            "crud_socios": True,
+            "validacion_documentos": True,
+            "busqueda_avanzada": True,
+            "estadisticas": True,
+            "consulta_ruc_publico": True,
+            "consulta_dni_publico": True,  # ✅ NUEVO
+            "creacion_desde_ruc": True,
+            "sincronizacion_sunat": True  # ✅ REACTIVADO
+        },
+        "metodos_consulta": {
+            "ruc": ["SUNAT_API_PRINCIPAL", "SUNAT_API_BACKUP", "CONSULTASAPI"],
+            "dni": ["RENIEC_API_PUBLICAS", "CONSULTASAPI"]
+        },
+        "integracion_consultasapi": {
+            "disponible": True,
+            "version": "1.0.0",
+            "servicios": ["SunatService", "ReniecService"]
+        },
+        "sire_integracion": {
+            "disponible": False,
+            "motivo": "Temporalmente removido para reestructuración",
+            "fecha_reintegracion_estimada": "Por definir"
+        },
+        "tipos_documento_soportados": ["RUC", "DNI", "CE"],
+        "validaciones_activas": ["formato", "digito_verificador", "longitud"]
+    }
 
 @router.post(
     "/",
@@ -344,18 +323,18 @@ async def get_stats(
 @router.post(
     "/consulta-ruc",
     response_model=ConsultaRucResponse,
-    summary="Consultar RUC en SUNAT"
+    summary="Consultar RUC usando APIs públicas"
 )
 async def consultar_ruc(
     request: ConsultaRucRequest,
     service: SocioNegocioService = Depends(get_socio_service)
 ):
     """
-    Consulta un RUC en el portal de SUNAT para obtener datos actualizados
+    Consulta un RUC usando APIs públicas disponibles (RENIEC, SUNAT públicas)
     
     - **ruc**: RUC de 11 dígitos a consultar
     
-    Utiliza web scraping y OCR para obtener información oficial de SUNAT
+    Utiliza APIs públicas confiables para obtener información del contribuyente
     """
     try:
         return await service.consultar_ruc(request.ruc)
@@ -368,23 +347,55 @@ async def consultar_ruc(
         )
 
 @router.post(
+    "/consulta-dni",
+    response_model=ConsultaDniResponse,
+    summary="Consultar DNI usando APIs públicas"
+)
+async def consultar_dni(
+    request: ConsultaDniRequest,
+    service: SocioNegocioService = Depends(get_socio_service)
+):
+    """
+    Consulta un DNI usando APIs públicas disponibles de RENIEC
+    
+    - **dni**: DNI de 8 dígitos a consultar
+    
+    Utiliza APIs públicas para obtener información de la persona
+    """
+    try:
+        resultado = await service.consultar_dni(request.dni)
+        return ConsultaDniResponse(
+            success=resultado["success"],
+            dni=request.dni,
+            data=resultado["data"],
+            error=resultado["message"] if not resultado["success"] else None,
+            metodo=resultado.get("fuente")
+        )
+    except Exception as e:
+        return ConsultaDniResponse(
+            success=False,
+            dni=request.dni,
+            error=f"Error consultando DNI: {str(e)}"
+        )
+
+@router.post(
     "/crear-desde-ruc",
     response_model=SocioNegocioResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Crear socio desde consulta RUC"
+    summary="Crear socio desde consulta RUC pública"
 )
 async def create_socio_from_ruc(
     request: SocioCreateFromRucRequest,
     service: SocioNegocioService = Depends(get_socio_service)
 ):
     """
-    Crea un socio automáticamente consultando sus datos en SUNAT
+    Crea un socio automáticamente consultando sus datos usando APIs públicas
     
     - **empresa_id**: ID de la empresa
     - **ruc**: RUC a consultar y crear
     - **tipo_socio**: Tipo de socio (proveedor, cliente, ambos)
     
-    Consulta automáticamente SUNAT y crea el socio con los datos oficiales
+    Consulta automáticamente APIs públicas y crea el socio con los datos disponibles
     """
     try:
         return await service.create_socio_from_ruc(
@@ -416,7 +427,7 @@ async def create_socio_from_ruc(
 @router.post(
     "/{socio_id}/sync-sunat",
     response_model=SocioNegocioResponse,
-    summary="Sincronizar socio con SUNAT"
+    summary="Sincronizar socio con APIs públicas"
 )
 async def sync_socio_with_sunat(
     socio_id: str,
@@ -424,12 +435,12 @@ async def sync_socio_with_sunat(
     service: SocioNegocioService = Depends(get_socio_service)
 ):
     """
-    Sincroniza un socio existente con datos actualizados de SUNAT
+    Sincroniza un socio existente con datos actualizados usando APIs públicas
     
     - **socio_id**: ID único del socio
     
     Solo funciona para socios con RUC. Actualiza automáticamente los datos
-    desde SUNAT y marca la fecha de última sincronización.
+    desde APIs públicas disponibles y marca la fecha de última sincronización.
     """
     try:
         return await service.sync_socio_with_sunat(socio_id)

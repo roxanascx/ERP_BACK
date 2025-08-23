@@ -1,6 +1,6 @@
 """
 Servicios de lógica de negocio para Socios de Negocio
-Integración 100% oficial con SUNAT usando infraestructura SIRE OAuth2
+Integración con módulo consultasapi para consultas RUC/DNI
 """
 
 from typing import List, Optional, Dict, Any, Tuple
@@ -19,22 +19,19 @@ from .exceptions import (
 )
 from .utils.ruc_validator import validar_documento
 
-# ✅ SOLO INTEGRACIÓN SIRE OFICIAL
-from ..sire.services.ruc_consulta_service import SireRucConsultaService
-from ..sire.utils.exceptions import SireException
+# ✅ IMPORTAR SERVICIOS DEL MÓDULO CONSULTASAPI
+from ..consultasapi.services import SunatService, ReniecService
 
 logger = logging.getLogger(__name__)
 
 class SocioNegocioService:
-    """Servicio principal para gestión de socios de negocio con integración SIRE OAuth2 oficial"""
+    """Servicio principal para gestión de socios de negocio con integración consultasapi"""
     
-    def __init__(
-        self,
-        repository: SocioNegocioRepository,
-        sire_ruc_service: SireRucConsultaService  # ✅ OBLIGATORIO: Solo SIRE oficial
-    ):
+    def __init__(self, repository: SocioNegocioRepository):
         self.repository = repository
-        self.sire_ruc_service = sire_ruc_service  # ✅ Servicio oficial SIRE
+        # ✅ USAR SERVICIOS DEL MÓDULO CONSULTASAPI
+        self.sunat_service = SunatService()
+        self.reniec_service = ReniecService()
     
     async def create_socio(self, empresa_id: str, socio_data: SocioNegocioCreate) -> SocioNegocioResponse:
         """
@@ -289,41 +286,39 @@ class SocioNegocioService:
     
     async def consultar_ruc(self, ruc: str) -> ConsultaRucResponse:
         """
-        Consulta un RUC en SUNAT usando exclusivamente API oficial SIRE OAuth2
+        Consulta un RUC usando el módulo consultasapi
         
         Args:
             ruc: RUC a consultar
             
         Returns:
-            ConsultaRucResponse: Resultado de la consulta oficial
+            ConsultaRucResponse: Resultado de la consulta
             
         Raises:
             RucConsultaException: Si no se puede realizar la consulta
         """
         try:
-            logger.info(f"� [CONSULTA-RUC-OFICIAL] Consultando RUC: {ruc}")
+            logger.info(f"🔍 [CONSULTA-RUC] Consultando RUC usando consultasapi: {ruc}")
             
-            # ✅ SOLO API OFICIAL SIRE OAuth2
-            resultado_oficial = await self.sire_ruc_service.consultar_ruc_oficial(ruc)
+            # ✅ USAR SERVICIO CONSULTASAPI
+            resultado_consulta = await self.sunat_service.consultar_ruc(ruc)
             
-            if resultado_oficial['success']:
-                logger.info(f"✅ [CONSULTA-RUC-OFICIAL] Éxito para RUC: {ruc}")
+            if resultado_consulta.success and resultado_consulta.data:
+                logger.info(f"✅ [CONSULTA-RUC] Éxito para RUC: {ruc}")
                 
-                # Construir respuesta desde datos oficiales
+                # Convertir datos del consultasapi al formato esperado por socios_negocio
                 from .schemas import DatosSunatResponse
                 datos_sunat = DatosSunatResponse(
-                    ruc=resultado_oficial['data']['ruc'],
-                    razon_social=resultado_oficial['data']['razon_social'],
-                    nombre_comercial=resultado_oficial['data'].get('nombre_comercial', ''),
-                    estado=resultado_oficial['data'].get('estado', 'ACTIVO'),
-                    condicion=resultado_oficial['data'].get('condicion', 'HABIDO'),
-                    direccion=resultado_oficial['data'].get('direccion', ''),
-                    ubigeo=resultado_oficial['data'].get('ubigeo', ''),
-                    tipo_contribuyente=resultado_oficial['data'].get('tipo_contribuyente', ''),
-                    fecha_inicio=resultado_oficial['data'].get('fecha_inicio', ''),
-                    actividad_economica=resultado_oficial['data'].get('actividad_economica', ''),
-                    validado_sunat=True,
-                    fuente="SUNAT_API_OFICIAL_OAUTH2"
+                    ruc=resultado_consulta.data.ruc,
+                    razon_social=resultado_consulta.data.razon_social,
+                    nombre_comercial=resultado_consulta.data.nombre_comercial or '',
+                    tipo_contribuyente=resultado_consulta.data.tipo_empresa or '',
+                    estado_contribuyente=resultado_consulta.data.estado,
+                    condicion_contribuyente='HABIDO',  # Por defecto
+                    domicilio_fiscal=resultado_consulta.data.direccion or '',
+                    actividad_economica=resultado_consulta.data.actividad_economica or '',
+                    fecha_inscripcion=resultado_consulta.data.fecha_inscripcion or '',
+                    ubigeo=resultado_consulta.data.ubigeo or ''
                 )
                 
                 return ConsultaRucResponse(
@@ -331,19 +326,69 @@ class SocioNegocioService:
                     ruc=ruc,
                     data=datos_sunat,
                     timestamp=datetime.utcnow(),
-                    metodo="SIRE_OAUTH2_OFICIAL"
+                    metodo=resultado_consulta.fuente or 'CONSULTASAPI'
                 )
             else:
-                # Error en consulta oficial
-                logger.error(f"❌ [CONSULTA-RUC-OFICIAL] Falló para RUC: {ruc}")
-                raise RucConsultaException("No se pudo consultar RUC con API oficial SUNAT")
+                # Error en consulta
+                logger.error(f"❌ [CONSULTA-RUC] Falló para RUC: {ruc} - {resultado_consulta.message}")
+                raise RucConsultaException(f"Error en consulta: {resultado_consulta.message}")
                         
-        except SireException as e:
-            logger.error(f"❌ [CONSULTA-RUC-OFICIAL] Error SIRE para RUC {ruc}: {e}")
-            raise RucConsultaException(f"Error en consulta oficial: {e}")
         except Exception as e:
-            logger.error(f"❌ [CONSULTA-RUC-OFICIAL] Error inesperado para RUC {ruc}: {e}")
-            raise RucConsultaException(f"Error interno: {e}")
+            logger.error(f"❌ [CONSULTA-RUC] Error para RUC {ruc}: {e}")
+            raise RucConsultaException(f"Error en consulta: {e}")
+    
+    async def consultar_dni(self, dni: str) -> Dict[str, Any]:
+        """
+        Consulta un DNI usando el módulo consultasapi
+        
+        Args:
+            dni: DNI a consultar
+            
+        Returns:
+            Dict[str, Any]: Resultado de la consulta DNI
+        """
+        try:
+            logger.info(f"🔍 [CONSULTA-DNI] Consultando DNI usando consultasapi: {dni}")
+            
+            # ✅ USAR SERVICIO CONSULTASAPI RENIEC
+            resultado_consulta = await self.reniec_service.consultar_dni(dni)
+            
+            if resultado_consulta.success and resultado_consulta.data:
+                logger.info(f"✅ [CONSULTA-DNI] Éxito para DNI: {dni}")
+                
+                return {
+                    "success": True,
+                    "data": {
+                        "dni": resultado_consulta.data.dni,
+                        "nombres": resultado_consulta.data.nombres,
+                        "apellido_paterno": resultado_consulta.data.apellido_paterno,
+                        "apellido_materno": resultado_consulta.data.apellido_materno,
+                        "apellidos": resultado_consulta.data.apellidos,
+                        "fecha_nacimiento": resultado_consulta.data.fecha_nacimiento,
+                        "estado_civil": resultado_consulta.data.estado_civil,
+                        "direccion": resultado_consulta.data.direccion,
+                        "ubigeo": resultado_consulta.data.ubigeo
+                    },
+                    "message": resultado_consulta.message,
+                    "fuente": resultado_consulta.fuente
+                }
+            else:
+                logger.warning(f"⚠️ [CONSULTA-DNI] No se encontraron datos para DNI: {dni}")
+                return {
+                    "success": False,
+                    "data": None,
+                    "message": resultado_consulta.message,
+                    "fuente": None
+                }
+                        
+        except Exception as e:
+            logger.error(f"❌ [CONSULTA-DNI] Error para DNI {dni}: {e}")
+            return {
+                "success": False,
+                "data": None,
+                "message": f"Error en consulta DNI: {e}",
+                "fuente": None
+            }
     
     async def create_socio_from_ruc(self, empresa_id: str, ruc: str, tipo_socio: str) -> SocioNegocioResponse:
         """

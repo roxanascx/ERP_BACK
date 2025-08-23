@@ -21,6 +21,9 @@ from ..modules.sire.routes import rvie_comprobante_bd as sire_rvie_bd_routes
 # Importar rutas del módulo Socios de Negocio
 from ..modules.socios_negocio import router as socios_negocio_router
 
+# Importar rutas del módulo Consultas API
+from ..modules.consultasapi import routes as consultas_api_routes
+
 # Router principal que incluye todos los módulos
 api_router = APIRouter(prefix="/api/v1")
 
@@ -122,4 +125,10 @@ api_router.include_router(
 api_router.include_router(
     socios_negocio_router,
     tags=["Socios de Negocio"]
+)
+
+# Incluir rutas del módulo Consultas API
+api_router.include_router(
+    consultas_api_routes.router,
+    tags=["Consultas de Documentos"]
 )
