@@ -18,6 +18,9 @@ from ..modules.sire.routes import rce_comprobante_bd as sire_rce_bd_routes
 # Importar nuevas rutas RVIE BD
 from ..modules.sire.routes import rvie_comprobante_bd as sire_rvie_bd_routes
 
+# Importar rutas del módulo Socios de Negocio
+from ..modules.socios_negocio import router as socios_negocio_router
+
 # Router principal que incluye todos los módulos
 api_router = APIRouter(prefix="/api/v1")
 
@@ -113,4 +116,10 @@ api_router.include_router(
     sire_rvie_bd_routes.router,
     prefix="/sire/rvie",
     tags=["SIRE-RVIE-BD"]
+)
+
+# Incluir rutas del módulo Socios de Negocio
+api_router.include_router(
+    socios_negocio_router,
+    tags=["Socios de Negocio"]
 )
