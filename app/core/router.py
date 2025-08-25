@@ -142,3 +142,11 @@ api_router.include_router(
     prefix="/system",
     tags=["System Config"]
 )
+
+# Incluir rutas del módulo Contabilidad (Accounting)
+from ..modules.accounting import routes as accounting_routes
+
+api_router.include_router(
+    accounting_routes.router,
+    tags=["Accounting"]
+)
