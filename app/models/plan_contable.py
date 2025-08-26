@@ -32,6 +32,9 @@ class CuentaContable(BaseModel):
     naturaleza: str = "DEUDORA"
     moneda: str = "MN"
     activa: bool = True
+    tipo_plan: str = "estandar"  # "estandar" | "personalizado"
+    empresa_id: Optional[str] = None  # Para planes personalizados por empresa
+    archivo_origen: Optional[str] = None  # Nombre del archivo importado
     fecha_creacion: datetime = Field(default_factory=datetime.now)
     fecha_modificacion: Optional[datetime] = None
 
@@ -52,6 +55,9 @@ class CuentaContableCreate(BaseModel):
     naturaleza: str = "DEUDORA"
     moneda: str = "MN"
     activa: bool = True
+    tipo_plan: str = "estandar"
+    empresa_id: Optional[str] = None
+    archivo_origen: Optional[str] = None
 
 class CuentaContableUpdate(BaseModel):
     descripcion: Optional[str] = None
@@ -74,6 +80,9 @@ class CuentaContableResponse(BaseModel):
     naturaleza: str
     moneda: str
     activa: bool
+    tipo_plan: str = "estandar"
+    empresa_id: Optional[str] = None
+    archivo_origen: Optional[str] = None
     tiene_hijos: bool = False
     fecha_creacion: datetime
     fecha_modificacion: Optional[datetime]
@@ -90,3 +99,40 @@ class EstadisticasPlanContable(BaseModel):
     cuentas_inactivas: int
     por_clase: List[ClaseContable]
     por_nivel: List[Dict[str, Any]]
+
+
+# Nuevos modelos para importación de planes personalizados
+class ValidationResult(BaseModel):
+    """Resultado de la validación de un archivo de plan contable"""
+    is_valid: bool
+    errors: List[str]
+    warnings: List[str]
+    total_lines: int
+    valid_accounts: int
+    preview_data: List[Dict[str, Any]]
+
+
+class ImportResult(BaseModel):
+    """Resultado de la importación de un plan contable"""
+    success: bool
+    imported_count: int
+    errors: List[str]
+    warnings: List[str]
+    backup_created: bool
+
+
+class PlanContableInfo(BaseModel):
+    """Información sobre un plan contable disponible"""
+    tipo: str  # "estandar" | "personalizado"
+    nombre: str
+    descripcion: str
+    total_cuentas: int
+    fecha_creacion: Optional[datetime] = None
+    archivo_origen: Optional[str] = None
+    activo: bool = False
+
+
+class SwitchPlanRequest(BaseModel):
+    """Request para cambiar tipo de plan contable"""
+    tipo_plan: str  # "estandar" | "personalizado"
+    empresa_id: str

@@ -17,7 +17,7 @@ class PlanContableServiceAdapter:
     def __init__(self, repository: Optional[AccountingRepository] = None):
         self.repo = repository or AccountingRepository()
 
-    async def list_cuentas(self, activos_solo: bool = True, clase_contable: Optional[int] = None, nivel: Optional[int] = None) -> List[CuentaContableResponse]:
+    async def list_cuentas(self, activos_solo: bool = True, clase_contable: Optional[int] = None, nivel: Optional[int] = None, empresa_id: str = None, tipo_plan: str = "estandar") -> List[CuentaContableResponse]:
         filtros = {}
         if activos_solo:
             filtros["activa"] = True
@@ -25,6 +25,18 @@ class PlanContableServiceAdapter:
             filtros["clase_contable"] = clase_contable
         if nivel:
             filtros["nivel"] = nivel
+            
+        # Filtros para empresa y tipo de plan
+        if empresa_id and tipo_plan == "personalizado":
+            filtros["empresa_id"] = empresa_id
+            filtros["tipo_plan"] = "personalizado"
+        else:
+            # Plan estándar: sin empresa_id o tipo_plan = "estandar"
+            filtros["$or"] = [
+                {"tipo_plan": "estandar"},
+                {"empresa_id": {"$exists": False}},
+                {"empresa_id": None}
+            ]
 
         docs = await self.repo.list_cuentas(filtros)
         return [self._doc_to_response(d) for d in docs]
@@ -49,12 +61,26 @@ class PlanContableServiceAdapter:
         created = await self.repo.find_by_codigo(documento["codigo"])
         return self._doc_to_response(created)
 
-    async def obtener_estructura_jerarquica(self) -> Dict[str, Any]:
+    async def obtener_estructura_jerarquica(self, empresa_id: str = None, tipo_plan: str = "estandar") -> Dict[str, Any]:
+        # Filtros para empresa y tipo de plan
+        filtros = {"nivel": 1, "activa": True}
+        
+        if empresa_id and tipo_plan == "personalizado":
+            filtros["empresa_id"] = empresa_id
+            filtros["tipo_plan"] = "personalizado"
+        else:
+            # Plan estándar: sin empresa_id o tipo_plan = "estandar"
+            filtros["$or"] = [
+                {"tipo_plan": "estandar"},
+                {"empresa_id": {"$exists": False}},
+                {"empresa_id": None}
+            ]
+        
         # Delegar a repository: recuperar nivel 1 y construir árbol recursivo
-        clases = await self.repo.list_cuentas({"nivel": 1, "activa": True})
+        clases = await self.repo.list_cuentas(filtros)
         estructura = []
         for clase in clases:
-            hijos = await self._obtener_hijos_recursivo(clase["codigo"])
+            hijos = await self._obtener_hijos_recursivo(clase["codigo"], empresa_id, tipo_plan)
             estructura.append({
                 "codigo": clase["codigo"],
                 "descripcion": clase["descripcion"],
@@ -64,19 +90,39 @@ class PlanContableServiceAdapter:
 
         return {"estructura": estructura, "total_clases": len(estructura)}
 
-    async def _obtener_hijos_recursivo(self, codigo_padre: str) -> List[Dict[str, Any]]:
+    async def _obtener_hijos_recursivo(self, codigo_padre: str, empresa_id: str = None, tipo_plan: str = "estandar") -> List[Dict[str, Any]]:
         if not codigo_padre:
             return []
         nivel_padre = len(codigo_padre)
         siguiente = nivel_padre + 1
         if siguiente > 8:
             return []
+        
+        # Preparar filtros base
         regex = f"^{codigo_padre}[0-9]$" if siguiente == 2 else f"^{codigo_padre}[0-9]+$"
-        hijos = await self.repo.list_cuentas({"codigo": {"$regex": regex}, "nivel": siguiente, "activa": True})
+        filtros = {
+            "codigo": {"$regex": regex}, 
+            "nivel": siguiente, 
+            "activa": True
+        }
+        
+        # Agregar filtros de empresa y tipo de plan
+        if empresa_id and tipo_plan == "personalizado":
+            filtros["empresa_id"] = empresa_id
+            filtros["tipo_plan"] = "personalizado"
+        else:
+            # Plan estándar
+            filtros["$or"] = [
+                {"tipo_plan": "estandar"},
+                {"empresa_id": {"$exists": False}},
+                {"empresa_id": None}
+            ]
+        
+        hijos = await self.repo.list_cuentas(filtros)
         resultado = []
         for hijo in hijos:
             if len(hijo["codigo"]) == siguiente:
-                sub = await self._obtener_hijos_recursivo(hijo["codigo"])
+                sub = await self._obtener_hijos_recursivo(hijo["codigo"], empresa_id, tipo_plan)
                 resultado.append({
                     "codigo": hijo["codigo"],
                     "descripcion": hijo["descripcion"],
@@ -175,6 +221,9 @@ class PlanContableServiceAdapter:
             naturaleza=documento.get("naturaleza", "DEUDORA"),
             moneda=documento.get("moneda", "MN"),
             activa=documento.get("activa", True),
+            tipo_plan=documento.get("tipo_plan", "estandar"),
+            empresa_id=documento.get("empresa_id"),
+            archivo_origen=documento.get("archivo_origen"),
             fecha_creacion=documento.get("fecha_creacion"),
             fecha_modificacion=documento.get("fecha_modificacion"),
         )
@@ -184,11 +233,13 @@ class AccountingService:
     def __init__(self):
         self.plan_service = PlanContableServiceAdapter()
 
-    async def get_plan_estructura(self) -> Dict[str, Any]:
-        return await self.plan_service.obtener_estructura_jerarquica()
+    async def get_plan_estructura(self, empresa_id: str = None, tipo_plan: str = "estandar") -> Dict[str, Any]:
+        """Obtiene la estructura jerárquica del plan contable, filtrado por empresa y tipo"""
+        return await self.plan_service.obtener_estructura_jerarquica(empresa_id, tipo_plan)
 
-    async def list_cuentas(self, activos_solo: bool = True):
-        return await self.plan_service.list_cuentas(activos_solo)
+    async def list_cuentas(self, activos_solo: bool = True, empresa_id: str = None, tipo_plan: str = "estandar"):
+        """Lista cuentas filtradas por empresa y tipo de plan"""
+        return await self.plan_service.list_cuentas(activos_solo, empresa_id=empresa_id, tipo_plan=tipo_plan)
 
     async def list_cuentas_filtradas(
         self, 
@@ -196,7 +247,9 @@ class AccountingService:
         clase_contable: Optional[int] = None,
         nivel: Optional[int] = None,
         busqueda: Optional[str] = None,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        empresa_id: str = None,
+        tipo_plan: str = "estandar"
     ):
         """Método optimizado para obtener cuentas con filtros múltiples"""
         filtros = {}
@@ -207,21 +260,45 @@ class AccountingService:
             filtros["clase_contable"] = clase_contable
         if nivel:
             filtros["nivel"] = nivel
+            
+        # Filtros para empresa y tipo de plan
+        if empresa_id and tipo_plan == "personalizado":
+            filtros["empresa_id"] = empresa_id
+            filtros["tipo_plan"] = "personalizado"
+        else:
+            # Plan estándar: sin empresa_id o tipo_plan = "estandar"
+            filtros["$or"] = [
+                {"tipo_plan": "estandar"},
+                {"empresa_id": {"$exists": False}},
+                {"empresa_id": None}
+            ]
         
         # Si hay búsqueda, usar búsqueda de texto
         if busqueda and busqueda.strip():
-            return await self.buscar_cuentas_rapido(busqueda.strip(), activos_solo, limit or 100)
+            return await self.buscar_cuentas_rapido(busqueda.strip(), activos_solo, limit or 100, empresa_id, tipo_plan)
         
         # Si no hay búsqueda, usar filtros normales
         docs = await self.plan_service.repo.list_cuentas(filtros, limit=limit)
         return [self.plan_service._doc_to_response(d) for d in docs]
 
-    async def buscar_cuentas_rapido(self, termino: str, activos_solo: bool = True, limit: int = 50):
-        """Búsqueda optimizada con índices de texto"""
+    async def buscar_cuentas_rapido(self, termino: str, activos_solo: bool = True, limit: int = 50, empresa_id: str = None, tipo_plan: str = "estandar"):
+        """Búsqueda optimizada con índices de texto, filtrada por empresa y tipo"""
         # Crear filtro base
         filtros = {}
         if activos_solo:
             filtros["activa"] = True
+            
+        # Filtros para empresa y tipo de plan
+        if empresa_id and tipo_plan == "personalizado":
+            filtros["empresa_id"] = empresa_id
+            filtros["tipo_plan"] = "personalizado"
+        else:
+            # Plan estándar
+            filtros["$or"] = [
+                {"tipo_plan": "estandar"},
+                {"empresa_id": {"$exists": False}},
+                {"empresa_id": None}
+            ]
         
         # Búsqueda por texto en MongoDB (requiere índice de texto)
         docs = await self.plan_service.repo.buscar_texto(termino, filtros, limit)

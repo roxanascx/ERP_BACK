@@ -1,0 +1,93 @@
+# PLANTILLA PLAN CONTABLE PERSONALIZADO
+# =====================================================
+# FORMATO: CODIGO[TAB/ESPACIOS]DESCRIPCION
+# 
+# REGLAS:
+# - Códigos numéricos únicos (máximo 10 dígitos)
+# - Descripción obligatoria (máximo 200 caracteres)
+# - Respetar jerarquía (el código padre debe existir antes que sus hijos)
+# - Usar espacios o tabuladores para separar código y descripción
+# - Las líneas que empiecen con # son comentarios y se ignoran
+#
+# EJEMPLO DE ESTRUCTURA JERÁRQUICA:
+# =====================================================
+
+1                 ACTIVO
+10                ACTIVO CORRIENTE
+101               EFECTIVO Y EQUIVALENTES DE EFECTIVO
+1011              CAJA
+10111             Caja Moneda Nacional
+10112             Caja Moneda Extranjera
+1012              FONDOS FIJOS
+10121             Fondo Fijo Principal
+10122             Fondo Fijo Sucursal
+102               CUENTAS CORRIENTES EN BANCOS
+1021              BANCOS LOCALES
+10211             Banco de Crédito del Perú - S/
+10212             Banco de Crédito del Perú - US$
+10213             Banco Continental - S/
+10214             Banco Continental - US$
+1022              BANCOS DEL EXTERIOR
+10221             Citibank New York - US$
+103               INVERSIONES FINANCIERAS TEMPORALES
+1031              CERTIFICADOS BANCARIOS
+1032              FONDOS MUTUOS
+
+2                 PASIVO
+20                PASIVO CORRIENTE
+201               SOBREGIROS BANCARIOS
+2011              Banco de Crédito del Perú
+2012              Banco Continental
+202               CUENTAS POR PAGAR COMERCIALES
+2021              FACTURAS POR PAGAR
+20211             Facturas Nacionales
+20212             Facturas del Exterior
+2022              LETRAS POR PAGAR
+20221             Letras Nacionales
+203               CUENTAS POR PAGAR DIVERSAS
+2031              PRÉSTAMOS DE TERCEROS
+2032              PRÉSTAMOS DE ACCIONISTAS
+
+3                 PATRIMONIO
+30                CAPITAL
+301               CAPITAL SOCIAL
+3011              Capital Suscrito
+3012              Capital Pagado
+302               EXCEDENTE DE REVALUACIÓN
+3021              Revaluación de Inmuebles
+303               RESERVAS
+3031              Reserva Legal
+3032              Reservas Facultativas
+
+4                 INGRESOS
+40                VENTAS
+401               VENTAS NACIONALES
+4011              VENTAS GRAVADAS
+40111             Ventas Gravadas - Terceros
+40112             Ventas Gravadas - Relacionadas
+4012              VENTAS EXONERADAS
+40121             Ventas Exoneradas - Terceros
+402               VENTAS AL EXTERIOR
+4021              Exportaciones Gravadas
+4022              Exportaciones Exoneradas
+
+5                 GASTOS
+50                GASTOS DE VENTAS
+501               GASTOS DE PERSONAL
+5011              SUELDOS Y SALARIOS
+50111             Sueldos Personal de Ventas
+5012              COMISIONES
+50121             Comisiones Vendedores
+502               GASTOS GENERALES DE VENTAS
+5021              PUBLICIDAD Y PROMOCIÓN
+5022              MOVILIDAD Y VIÁTICOS
+
+# =====================================================
+# INSTRUCCIONES DE USO:
+# 1. Descarga esta plantilla
+# 2. Edita con tu plan contable personalizado
+# 3. Mantén el formato: CODIGO[ESPACIOS]DESCRIPCION
+# 4. Respeta la jerarquía numérica
+# 5. Guarda como archivo .txt
+# 6. Importa desde la aplicación
+# =====================================================
