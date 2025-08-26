@@ -39,11 +39,22 @@ from app.modules.accounting.schemas import (
     FiltrosLibroDiario,
     ResumenLibroDiario,
     ExportOptions,
-    CuentaContableLookup
+    CuentaContableLookup,
+    # Schemas PLE
+    PLEExportOptions,
+    PLEExportResult,
+    PLEValidationResult,
+    PLEPreviewResult,
+    PLEStatsResult,
+    PLEReportResult
 )
 from app.modules.accounting.import_service import PlanContableImportService
+from app.modules.accounting.sunat_routes import router as sunat_router
 
 router = APIRouter(prefix="/accounting", tags=["Accounting"])
+
+# Incluir rutas de tablas SUNAT
+router.include_router(sunat_router)
 
 
 @router.get("/ping", summary="Health ping del módulo accounting")
@@ -727,3 +738,242 @@ async def generar_reporte_empresa(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================
+# ENDPOINTS PLE (PROGRAMA DE LIBROS ELECTRÓNICOS)
+# =====================================
+
+@router.post("/libros-diario/{libro_id}/export-ple")
+async def exportar_libro_diario_ple(
+    libro_id: str,
+    opciones: Optional[Dict[str, Any]] = None
+):
+    """
+    Exportar libro diario a formato PLE para SUNAT.
+    
+    Genera archivo TXT (y opcionalmente ZIP) según especificaciones SUNAT
+    para el Programa de Libros Electrónicos (PLE).
+    """
+    try:
+        service = LibroDiarioService()
+        resultado = await service.exportar_a_ple(libro_id, opciones)
+        
+        if not resultado["exito"]:
+            raise HTTPException(status_code=400, detail=resultado.get("error", "Error en exportación PLE"))
+        
+        # Importar schemas PLE
+        from app.modules.accounting.schemas import PLEExportResult
+        
+        return PLEExportResult(**resultado)
+    
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+
+@router.get("/libros-diario/{libro_id}/validate-ple")
+async def validar_libro_diario_ple(libro_id: str):
+    """
+    Validar libro diario para exportación PLE.
+    
+    Realiza validaciones básicas y validaciones específicas SUNAT
+    para verificar que el libro esté listo para exportar a PLE.
+    """
+    try:
+        service = LibroDiarioService()
+        resultado = await service.validar_para_ple(libro_id)
+        
+        if not resultado["exito"]:
+            raise HTTPException(status_code=400, detail=resultado.get("error", "Error en validación PLE"))
+        
+        # Importar schemas PLE
+        from app.modules.accounting.schemas import PLEValidationResult
+        
+        return PLEValidationResult(**resultado)
+    
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+
+@router.get("/libros-diario/{libro_id}/preview-ple")
+async def preview_archivo_ple(
+    libro_id: str,
+    max_lineas: int = Query(10, ge=1, le=100, description="Número máximo de líneas a mostrar")
+):
+    """
+    Generar vista previa del archivo PLE.
+    
+    Muestra las primeras líneas del archivo PLE que se generaría,
+    sin crear el archivo completo. Útil para verificar formato.
+    """
+    try:
+        service = LibroDiarioService()
+        resultado = await service.preview_ple(libro_id, max_lineas)
+        
+        if not resultado["exito"]:
+            raise HTTPException(status_code=400, detail=resultado.get("error", "Error en preview PLE"))
+        
+        # Importar schemas PLE
+        from app.modules.accounting.schemas import PLEPreviewResult
+        
+        return PLEPreviewResult(**resultado)
+    
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+
+@router.get("/libros-diario/{libro_id}/stats-ple")
+async def estadisticas_ple(libro_id: str):
+    """
+    Obtener estadísticas del libro diario para PLE.
+    
+    Proporciona información estadística sobre el libro diario
+    relevante para la exportación PLE (totales, cuentas, estimaciones).
+    """
+    try:
+        service = LibroDiarioService()
+        resultado = await service.obtener_estadisticas_ple(libro_id)
+        
+        if not resultado["exito"]:
+            raise HTTPException(status_code=400, detail=resultado.get("error", "Error obteniendo estadísticas PLE"))
+        
+        # Importar schemas PLE
+        from app.modules.accounting.schemas import PLEStatsResult
+        
+        return PLEStatsResult(**resultado)
+    
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+
+@router.get("/libros-diario/{libro_id}/report-ple")
+async def generar_reporte_validacion_ple(libro_id: str):
+    """
+    Generar reporte detallado de validación PLE.
+    
+    Produce un reporte completo en texto con todas las validaciones,
+    errores, warnings y recomendaciones para la exportación PLE.
+    """
+    try:
+        service = LibroDiarioService()
+        resultado = await service.generar_reporte_validacion(libro_id)
+        
+        if not resultado["exito"]:
+            raise HTTPException(status_code=400, detail=resultado.get("error", "Error generando reporte PLE"))
+        
+        # Importar schemas PLE
+        from app.modules.accounting.schemas import PLEReportResult
+        
+        return PLEReportResult(**resultado)
+    
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+
+@router.get("/libros-diario/{libro_id}/download-ple")
+async def descargar_archivo_ple(
+    libro_id: str,
+    formato: str = Query("zip", regex="^(txt|zip)$", description="Formato del archivo a descargar"),
+    opciones: Optional[Dict[str, Any]] = None
+):
+    """
+    Descargar archivo PLE generado.
+    
+    Genera y descarga el archivo PLE en el formato especificado.
+    Útil para descargar directamente desde el navegador.
+    """
+    try:
+        service = LibroDiarioService()
+        
+        # Configurar opciones basadas en el formato solicitado
+        opciones_descarga = opciones or {}
+        opciones_descarga["generar_zip"] = (formato == "zip")
+        
+        resultado = await service.exportar_a_ple(libro_id, opciones_descarga)
+        
+        if not resultado["exito"]:
+            raise HTTPException(status_code=400, detail=resultado.get("error", "Error generando archivo PLE"))
+        
+        # Preparar descarga
+        if formato == "zip" and resultado.get("contenido_zip"):
+            content = resultado["contenido_zip"]
+            media_type = "application/zip"
+            filename = resultado["nombre_archivo"].replace(".TXT", ".zip")
+        else:
+            content = resultado["contenido_txt"].encode('utf-8')
+            media_type = "text/plain"
+            filename = resultado["nombre_archivo"]
+        
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+
+@router.post("/libros-diario/{libro_id}/validate-and-export-ple")
+async def validar_y_exportar_ple(
+    libro_id: str,
+    opciones: Optional[Dict[str, Any]] = None,
+    forzar_exportacion: bool = Query(False, description="Forzar exportación aún con warnings")
+):
+    """
+    Validar y exportar libro diario a PLE en una sola operación.
+    
+    Primero valida el libro diario y luego, si es válido (o si se fuerza),
+    genera el archivo PLE. Optimizado para procesos automatizados.
+    """
+    try:
+        service = LibroDiarioService()
+        
+        # 1. Validar primero
+        resultado_validacion = await service.validar_para_ple(libro_id)
+        
+        if not resultado_validacion["exito"]:
+            raise HTTPException(status_code=400, detail=resultado_validacion.get("error", "Error en validación"))
+        
+        # 2. Determinar si proceder con exportación
+        valido = resultado_validacion["valido"]
+        tiene_errores_criticos = any(
+            e["critico"] for e in resultado_validacion["validacion_sunat"]["errores"]
+        )
+        
+        puede_exportar = valido or (forzar_exportacion and not tiene_errores_criticos)
+        
+        if not puede_exportar:
+            return {
+                "exito": False,
+                "validacion": resultado_validacion,
+                "exportacion": None,
+                "mensaje": "No se puede exportar debido a errores críticos. Use forzar_exportacion=true para ignorar warnings."
+            }
+        
+        # 3. Proceder con exportación
+        resultado_exportacion = await service.exportar_a_ple(libro_id, opciones)
+        
+        return {
+            "exito": True,
+            "validacion": resultado_validacion,
+            "exportacion": resultado_exportacion,
+            "mensaje": "Validación y exportación completadas exitosamente"
+        }
+    
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")

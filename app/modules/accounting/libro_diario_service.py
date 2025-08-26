@@ -420,6 +420,458 @@ class LibroDiarioService:
             raise
     
     # =====================================
+    # MÉTODOS PLE (PROGRAMA DE LIBROS ELECTRÓNICOS)
+    # =====================================
+    
+    async def exportar_a_ple(
+        self, 
+        libro_id: str, 
+        opciones: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Exportar libro diario a formato PLE para SUNAT.
+        
+        Args:
+            libro_id: ID del libro diario a exportar
+            opciones: Opciones de configuración para la exportación PLE
+            
+        Returns:
+            Dict con el resultado de la exportación PLE
+        """
+        try:
+            logger.info(f"Iniciando exportación PLE del libro {libro_id}")
+            
+            # 1. Obtener el libro diario
+            libro = await self.repository.obtener_libro(libro_id)
+            if not libro:
+                raise ValueError(f"Libro diario {libro_id} no encontrado")
+            
+            # 2. Obtener información de la empresa
+            empresa_info = await self._obtener_info_empresa(libro.get("empresaId"))
+            
+            # 3. Configurar opciones por defecto
+            from app.modules.accounting.ple import PLEOptions
+            
+            opciones_ple = PLEOptions()
+            if opciones:
+                # Actualizar opciones con las proporcionadas
+                for key, value in opciones.items():
+                    if hasattr(opciones_ple, key):
+                        setattr(opciones_ple, key, value)
+            
+            # 4. Generar archivo PLE
+            from app.modules.accounting.ple import PLEGenerator
+            from datetime import datetime
+            
+            generator = PLEGenerator()
+            
+            # Determinar el período del libro
+            periodo = datetime.now().date()  # Por defecto usar fecha actual
+            if libro.get("periodo"):
+                periodo_str = libro["periodo"]
+                try:
+                    periodo = datetime.strptime(periodo_str, "%Y-%m").date()
+                except ValueError:
+                    logger.warning(f"Formato de período inválido: {periodo_str}, usando fecha actual")
+            
+            # Generar archivo PLE
+            archivo_ple = await generator.generar_libro_diario_ple(
+                libro_data=libro,
+                empresa_ruc=empresa_info.get("ruc", "00000000000"),
+                periodo=periodo,
+                opciones=opciones_ple
+            )
+            
+            # 5. Preparar respuesta
+            resultado = {
+                "exito": True,
+                "libro_id": libro_id,
+                "nombre_archivo": archivo_ple.nombre_archivo,
+                "tamaño_txt": archivo_ple.tamaño_txt,
+                "tamaño_zip": archivo_ple.tamaño_zip,
+                "total_lineas": archivo_ple.total_lineas,
+                "contenido_txt": archivo_ple.contenido_txt,
+                "contenido_zip": archivo_ple.contenido_zip,
+                "fecha_generacion": archivo_ple.fecha_generacion.isoformat(),
+                "errores": archivo_ple.errores,
+                "warnings": archivo_ple.warnings,
+                "metadatos": archivo_ple.metadatos,
+                "validacion_sunat": archivo_ple.validacion_sunat,
+                "datos_enriquecidos": archivo_ple.datos_enriquecidos,
+                "reporte_validacion": archivo_ple.reporte_validacion
+            }
+            
+            logger.info(f"Exportación PLE completada exitosamente para libro {libro_id}")
+            return resultado
+            
+        except Exception as e:
+            logger.error(f"Error al exportar libro {libro_id} a PLE: {str(e)}")
+            return {
+                "exito": False,
+                "libro_id": libro_id,
+                "error": str(e),
+                "errores": [str(e)]
+            }
+    
+    async def validar_para_ple(self, libro_id: str) -> Dict[str, Any]:
+        """
+        Validar libro diario para exportación PLE.
+        
+        Args:
+            libro_id: ID del libro diario a validar
+            
+        Returns:
+            Dict con el resultado de la validación
+        """
+        try:
+            logger.info(f"Iniciando validación PLE del libro {libro_id}")
+            
+            # 1. Obtener el libro diario
+            libro = await self.repository.obtener_libro(libro_id)
+            if not libro:
+                raise ValueError(f"Libro diario {libro_id} no encontrado")
+            
+            # 2. Realizar validación básica
+            from app.modules.accounting.ple import PLEDataAnalyzer
+            
+            analyzer = PLEDataAnalyzer()
+            resultado_basico = await analyzer.analizar_libro_diario(libro)
+            
+            # 3. Realizar validación SUNAT
+            from app.modules.accounting.ple import PLESUNATValidator
+            
+            validator = PLESUNATValidator()
+            resultado_sunat = await validator.validar_libro_diario_completo(libro)
+            
+            # 4. Preparar respuesta consolidada
+            resultado = {
+                "exito": True,
+                "libro_id": libro_id,
+                "valido": resultado_basico.valido and resultado_sunat.valido,
+                "validacion_basica": {
+                    "valido": resultado_basico.valido,
+                    "total_asientos": resultado_basico.total_asientos,
+                    "total_debe": str(resultado_basico.total_debe),
+                    "total_haber": str(resultado_basico.total_haber),
+                    "balanceado": resultado_basico.balanceado,
+                    "errores": resultado_basico.errores,
+                    "warnings": resultado_basico.warnings
+                },
+                "validacion_sunat": {
+                    "valido": resultado_sunat.valido,
+                    "total_registros": resultado_sunat.total_registros,
+                    "registros_validados": resultado_sunat.registros_validados,
+                    "errores": [
+                        {
+                            "codigo": e.codigo,
+                            "tabla": e.tabla,
+                            "campo": e.campo,
+                            "valor": e.valor_encontrado,
+                            "mensaje": e.mensaje,
+                            "critico": e.critico
+                        } for e in resultado_sunat.errores
+                    ],
+                    "warnings": [
+                        {
+                            "codigo": w.codigo,
+                            "tabla": w.tabla,
+                            "campo": w.campo,
+                            "valor": w.valor_encontrado,
+                            "mensaje": w.mensaje
+                        } for w in resultado_sunat.warnings
+                    ],
+                    "datos_enriquecidos": resultado_sunat.datos_enriquecidos,
+                    "estadisticas": resultado_sunat.estadisticas,
+                    "tiempo_validacion": resultado_sunat.tiempo_validacion
+                }
+            }
+            
+            logger.info(f"Validación PLE completada para libro {libro_id}")
+            return resultado
+            
+        except Exception as e:
+            logger.error(f"Error al validar libro {libro_id} para PLE: {str(e)}")
+            return {
+                "exito": False,
+                "libro_id": libro_id,
+                "valido": False,
+                "error": str(e)
+            }
+    
+    async def preview_ple(self, libro_id: str, max_lineas: int = 10) -> Dict[str, Any]:
+        """
+        Generar vista previa del archivo PLE sin crear el archivo completo.
+        
+        Args:
+            libro_id: ID del libro diario
+            max_lineas: Número máximo de líneas para mostrar
+            
+        Returns:
+            Dict con la vista previa del PLE
+        """
+        try:
+            logger.info(f"Generando preview PLE del libro {libro_id}")
+            
+            # 1. Obtener el libro diario
+            libro = await self.repository.obtener_libro(libro_id)
+            if not libro:
+                raise ValueError(f"Libro diario {libro_id} no encontrado")
+            
+            # 2. Obtener información de la empresa
+            empresa_info = await self._obtener_info_empresa(libro.get("empresaId"))
+            
+            # 3. Generar preview con opciones básicas
+            from app.modules.accounting.ple import PLEGenerator, PLEOptions
+            from datetime import datetime
+            
+            opciones = PLEOptions(
+                validar_con_sunat=False,  # Para preview rápido
+                generar_zip=False,
+                incluir_reporte_validacion=False
+            )
+            
+            generator = PLEGenerator()
+            periodo = datetime.now().date()
+            
+            archivo_ple = await generator.generar_libro_diario_ple(
+                libro_data=libro,
+                empresa_ruc=empresa_info.get("ruc", "00000000000"),
+                periodo=periodo,
+                opciones=opciones
+            )
+            
+            # 4. Preparar preview limitado
+            lineas = archivo_ple.contenido_txt.split('\n')
+            lineas_preview = lineas[:max_lineas]
+            
+            resultado = {
+                "exito": True,
+                "libro_id": libro_id,
+                "nombre_archivo": archivo_ple.nombre_archivo,
+                "total_lineas": archivo_ple.total_lineas,
+                "lineas_mostradas": len(lineas_preview),
+                "preview_lineas": lineas_preview,
+                "muestra_completa": len(lineas) <= max_lineas,
+                "estadisticas": {
+                    "total_asientos": len(libro.get("asientos", [])),
+                    "total_movimientos": sum(len(asiento.get("movimientos", [])) for asiento in libro.get("asientos", [])),
+                    "tamaño_estimado": len(archivo_ple.contenido_txt)
+                }
+            }
+            
+            logger.info(f"Preview PLE generado para libro {libro_id}")
+            return resultado
+            
+        except Exception as e:
+            logger.error(f"Error al generar preview PLE del libro {libro_id}: {str(e)}")
+            return {
+                "exito": False,
+                "libro_id": libro_id,
+                "error": str(e)
+            }
+    
+    async def obtener_estadisticas_ple(self, libro_id: str) -> Dict[str, Any]:
+        """
+        Obtener estadísticas del libro diario para exportación PLE.
+        
+        Args:
+            libro_id: ID del libro diario
+            
+        Returns:
+            Dict con estadísticas para PLE
+        """
+        try:
+            logger.info(f"Obteniendo estadísticas PLE del libro {libro_id}")
+            
+            # 1. Obtener el libro diario
+            libro = await self.repository.obtener_libro(libro_id)
+            if not libro:
+                raise ValueError(f"Libro diario {libro_id} no encontrado")
+            
+            # 2. Calcular estadísticas básicas
+            asientos = libro.get("asientos", [])
+            total_asientos = len(asientos)
+            total_movimientos = sum(len(asiento.get("movimientos", [])) for asiento in asientos)
+            
+            # Calcular totales de debe y haber
+            total_debe = 0.0
+            total_haber = 0.0
+            cuentas_utilizadas = set()
+            
+            for asiento in asientos:
+                for movimiento in asiento.get("movimientos", []):
+                    debe = float(movimiento.get("debe", 0))
+                    haber = float(movimiento.get("haber", 0))
+                    total_debe += debe
+                    total_haber += haber
+                    
+                    cuenta = movimiento.get("cuenta_contable", "").strip()
+                    if cuenta:
+                        cuentas_utilizadas.add(cuenta)
+            
+            # 3. Estimar tamaño del archivo
+            # Estimación: cada línea PLE tiene aproximadamente 100-150 caracteres
+            tamaño_estimado_txt = total_movimientos * 125  # bytes aproximados
+            
+            # 4. Preparar estadísticas
+            resultado = {
+                "exito": True,
+                "libro_id": libro_id,
+                "estadisticas": {
+                    "resumen": {
+                        "total_asientos": total_asientos,
+                        "total_movimientos": total_movimientos,
+                        "total_debe": round(total_debe, 2),
+                        "total_haber": round(total_haber, 2),
+                        "balanceado": abs(total_debe - total_haber) < 0.01,
+                        "total_cuentas_utilizadas": len(cuentas_utilizadas)
+                    },
+                    "archivo_estimado": {
+                        "tamaño_txt_bytes": tamaño_estimado_txt,
+                        "tamaño_txt_kb": round(tamaño_estimado_txt / 1024, 2),
+                        "lineas_estimadas": total_movimientos
+                    },
+                    "periodo": libro.get("periodo", "No especificado"),
+                    "empresa_id": libro.get("empresaId", "No especificado"),
+                    "fecha_creacion": libro.get("fechaCreacion", "No especificado"),
+                    "cuentas_muestra": list(cuentas_utilizadas)[:10] if cuentas_utilizadas else []
+                }
+            }
+            
+            logger.info(f"Estadísticas PLE obtenidas para libro {libro_id}")
+            return resultado
+            
+        except Exception as e:
+            logger.error(f"Error al obtener estadísticas PLE del libro {libro_id}: {str(e)}")
+            return {
+                "exito": False,
+                "libro_id": libro_id,
+                "error": str(e)
+            }
+    
+    async def generar_reporte_validacion(self, libro_id: str) -> Dict[str, Any]:
+        """
+        Generar reporte detallado de validación para PLE.
+        
+        Args:
+            libro_id: ID del libro diario
+            
+        Returns:
+            Dict con reporte de validación detallado
+        """
+        try:
+            logger.info(f"Generando reporte de validación PLE del libro {libro_id}")
+            
+            # 1. Realizar validación completa
+            resultado_validacion = await self.validar_para_ple(libro_id)
+            
+            if not resultado_validacion["exito"]:
+                return resultado_validacion
+            
+            # 2. Generar reporte textual
+            reporte_lineas = []
+            reporte_lineas.append("REPORTE DE VALIDACIÓN LIBRO DIARIO PLE")
+            reporte_lineas.append("=" * 60)
+            reporte_lineas.append(f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+            reporte_lineas.append(f"Libro ID: {libro_id}")
+            reporte_lineas.append("")
+            
+            # Resumen general
+            valido_general = resultado_validacion["valido"]
+            reporte_lineas.append("📋 RESUMEN GENERAL")
+            reporte_lineas.append("-" * 20)
+            reporte_lineas.append(f"Estado: {'✅ VÁLIDO PARA PLE' if valido_general else '❌ REQUIERE CORRECCIONES'}")
+            reporte_lineas.append("")
+            
+            # Validación básica
+            val_basica = resultado_validacion["validacion_basica"]
+            reporte_lineas.append("🔍 VALIDACIÓN BÁSICA")
+            reporte_lineas.append("-" * 20)
+            reporte_lineas.append(f"Estado: {'✅ Válido' if val_basica['valido'] else '❌ Con errores'}")
+            reporte_lineas.append(f"Total asientos: {val_basica['total_asientos']}")
+            reporte_lineas.append(f"Total debe: S/ {val_basica['total_debe']}")
+            reporte_lineas.append(f"Total haber: S/ {val_basica['total_haber']}")
+            reporte_lineas.append(f"Balanceado: {'✅ Sí' if val_basica['balanceado'] else '❌ No'}")
+            reporte_lineas.append("")
+            
+            if val_basica["errores"]:
+                reporte_lineas.append("❌ Errores básicos:")
+                for error in val_basica["errores"]:
+                    reporte_lineas.append(f"   • {error}")
+                reporte_lineas.append("")
+            
+            # Validación SUNAT
+            val_sunat = resultado_validacion["validacion_sunat"]
+            reporte_lineas.append("🏛️  VALIDACIÓN SUNAT")
+            reporte_lineas.append("-" * 20)
+            reporte_lineas.append(f"Estado: {'✅ Válido' if val_sunat['valido'] else '❌ Con observaciones'}")
+            reporte_lineas.append(f"Registros validados: {val_sunat['registros_validados']}/{val_sunat['total_registros']}")
+            reporte_lineas.append(f"Tiempo validación: {val_sunat['tiempo_validacion']:.2f}s")
+            reporte_lineas.append("")
+            
+            if val_sunat["errores"]:
+                reporte_lineas.append("❌ Errores SUNAT:")
+                for error in val_sunat["errores"]:
+                    critico = "🔴 CRÍTICO" if error["critico"] else "🟡 NO CRÍTICO"
+                    reporte_lineas.append(f"   {critico} [{error['tabla']}] {error['mensaje']}")
+                reporte_lineas.append("")
+            
+            if val_sunat["warnings"]:
+                reporte_lineas.append("⚠️  Warnings SUNAT:")
+                for warning in val_sunat["warnings"]:
+                    reporte_lineas.append(f"   • [{warning['tabla']}] {warning['mensaje']}")
+                reporte_lineas.append("")
+            
+            # Estadísticas
+            if val_sunat.get("estadisticas"):
+                stats = val_sunat["estadisticas"]
+                reporte_lineas.append("📊 ESTADÍSTICAS")
+                reporte_lineas.append("-" * 20)
+                reporte_lineas.append(f"Porcentaje validado: {stats.get('porcentaje_validado', 0):.1f}%")
+                reporte_lineas.append(f"Cuentas validadas: {stats.get('cuentas_validadas', 0)}")
+                reporte_lineas.append(f"Errores críticos: {stats.get('errores_criticos', 0)}")
+                reporte_lineas.append("")
+            
+            # Recomendaciones
+            reporte_lineas.append("💡 RECOMENDACIONES")
+            reporte_lineas.append("-" * 20)
+            if valido_general:
+                reporte_lineas.append("✅ El libro está listo para generar archivo PLE")
+                reporte_lineas.append("✅ Puede proceder con la exportación a SUNAT")
+            else:
+                reporte_lineas.append("🔧 Corrija los errores críticos antes de exportar")
+                reporte_lineas.append("📋 Revise los warnings para mejorar la calidad")
+                reporte_lineas.append("🏛️  Verifique las cuentas contables con las tablas SUNAT")
+            
+            reporte_texto = "\n".join(reporte_lineas)
+            
+            # 3. Preparar respuesta con reporte
+            resultado = {
+                "exito": True,
+                "libro_id": libro_id,
+                "reporte_texto": reporte_texto,
+                "resumen": {
+                    "valido": valido_general,
+                    "errores_criticos": sum(1 for e in val_sunat["errores"] if e["critico"]),
+                    "total_errores": len(val_sunat["errores"]),
+                    "total_warnings": len(val_sunat["warnings"]),
+                    "tiempo_validacion": val_sunat["tiempo_validacion"]
+                },
+                "validacion_completa": resultado_validacion
+            }
+            
+            logger.info(f"Reporte de validación PLE generado para libro {libro_id}")
+            return resultado
+            
+        except Exception as e:
+            logger.error(f"Error al generar reporte de validación del libro {libro_id}: {str(e)}")
+            return {
+                "exito": False,
+                "libro_id": libro_id,
+                "error": str(e)
+            }
+    
+    # =====================================
     # MÉTODOS PRIVADOS DE UTILIDAD
     # =====================================
     

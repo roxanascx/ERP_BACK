@@ -1,12 +1,35 @@
 # 🏗️ Backend ERP - Documentación Técnica Completa
 
 ## 📋 Índice
-1. [Visió└── modules/              # 📦 Módulos de dominio
+1. [Visió└── modul   ├── models/
+   │   └── user.py           # 👤 Modelos base de usuario
+   ├── routes/
+   │   ├── auth.py           # 🔐 Autenticación base
+   │   └── users.py          # 👥 Gestión usuarios
+   ├── services/
+   │   └── user_service.py   # 🔧 Servicios de usuario
+   └── modules/              # 📦 Módulos de dominio
        ├── companies/        # 🏢 Gestión empresas
-       ├── accounting/       # 📊 Módulo contable
+       ├── accounting/       # 📊 Módulo contable + PLE
+       │   ├── ple/         # 📋 Sistema PLE (Libro Diario)
+       │   ├── sunat_*.py   # 🏛️ 12 Tablas SUNAT oficiales
+       │   └── libro_diario_*.py # 📖 Gestión libros diarios
        ├── consultasapi/     # 🔍 Consultas RUC/DNI APIs públicas
        ├── socios_negocio/   # 🤝 Gestión socios de negocio
-       └── sire/            # 🇵🇪 Integración SUNAT SIREneral](#-visión-general)
+       └── sire/            # 🇵🇪 Integración SUNAT SIRE      # 📦 Módulos de dominio
+       ├── companies/        # 🏢 Gestión empresas
+       ├── accounting/       # 📊 Módulo contable + PLE SUNAT
+       │   ├── ple/         # 🇵🇪 Sistema PLE (Programa Libros Electrónicos)
+       │   │   ├── ple_analyzer.py      # Análisis datos contables
+       │   │   ├── ple_formatter.py     # Formateo SUNAT
+       │   │   ├── ple_generator.py     # Generación archivos PLE
+       │   │   └── ple_sunat_validator.py # Validación + enriquecimiento
+       │   ├── libro_diario_service.py  # Servicios libro diario + PLE
+       │   ├── schemas.py              # Esquemas Pydantic + PLE
+       │   └── routes.py               # Endpoints REST + PLE
+       ├── consultasapi/     # 🔍 Consultas RUC/DNI APIs públicas
+       ├── socios_negocio/   # 🤝 Gestión socios de negocio
+       └── sire/            # 🇵🇪 Integración SUNAT SIRE
 2. [Arquitectura](#-arquitectura)
 3. [Estructura de Directorios](#-estructura-de-directorios)
 4. [Módulos Principales](#-módulos-principales)
@@ -30,9 +53,10 @@
 - **Documentación**: OpenAPI (Swagger)
 
 ### Propósito Principal
-Sistema ERP contable especializado en **SUNAT SIRE** (Sistema Integrado de Registros Electrónicos) para empresas peruanas, con funciones de:
+Sistema ERP contable especializado en **SUNAT SIRE** (Sistema Integrado de Registros Electrónicos) y **PLE** (Programa de Libros Electrónicos) para empresas peruanas, con funciones de:
 - **RVIE**: Registro de Ventas e Ingresos Electrónico
 - **RCE**: Registro de Compras Electrónico  
+- **PLE Libro Diario**: Exportación completa con validación SUNAT
 - **Autenticación SUNAT**: OAuth2 + JWT
 - **Gestión de Empresas**: CRUD y configuración
 - **Consultas RUC/DNI**: Integración con APIs públicas SUNAT/RENIEC
@@ -145,7 +169,26 @@ module_name/
 - Endpoints oficiales SUNAT v25
 
 ### 3. 📈 **Accounting Module**
-**Propósito**: Funciones contables básicas (en desarrollo)
+**Propósito**: Sistema contable completo con exportación PLE (Programa de Libros Electrónicos) para SUNAT
+
+**Archivos clave**:
+- `libro_diario_service.py` - Servicios de libro diario + PLE
+- `schemas.py` - Esquemas completos incluendo PLE
+- `routes.py` - Endpoints REST API + PLE
+- `repositories.py` - Acceso a datos MongoDB
+- `ple/` - Módulo especializado PLE
+  - `ple_analyzer.py` - Análisis de datos contables
+  - `ple_formatter.py` - Formateo según SUNAT
+  - `ple_generator.py` - Generación archivos PLE
+  - `ple_sunat_validator.py` - Validación + enriquecimiento SUNAT
+
+**Funcionalidades**:
+- ✅ Gestión completa de libros diarios
+- ✅ Exportación a formato PLE SUNAT
+- ✅ Validación con 12 tablas oficiales SUNAT
+- ✅ Enriquecimiento automático de datos contables
+- ✅ Generación de reportes de validación
+- ✅ API RESTful para integración frontend
 
 ### 4. 🔍 **Consultas API Module**
 **Propósito**: Centralización de consultas a APIs públicas para validación de documentos peruanos
@@ -240,6 +283,27 @@ sequenceDiagram
     F->>U: Empresa registrada ✅
 ```
 
+### 📊 **Flujo Exportación PLE Libro Diario**
+```mermaid
+sequenceDiagram
+    participant U as Usuario
+    participant F as Frontend
+    participant B as Backend
+    participant S as Servicio SUNAT
+    participant M as MongoDB
+    
+    U->>F: Solicita exportación PLE
+    F->>B: POST /api/v1/libros-diario/{id}/export-ple
+    B->>M: Obtiene datos libro diario
+    B->>B: Analiza estructura contable (PLEAnalyzer)
+    B->>S: Valida con 12 tablas SUNAT
+    S->>B: Resultados validación + enriquecimiento
+    B->>B: Formatea según especificaciones SUNAT
+    B->>B: Genera archivo PLE (LE{RUC}{PERIODO}50110011.TXT)
+    B->>F: {archivo_nombre, tamaño, validación_resultado}
+    F->>U: Archivo PLE listo para SUNAT ✅
+```
+
 ### 🔍 **Flujo Consulta RUC/DNI**
 ```mermaid
 sequenceDiagram
@@ -320,11 +384,30 @@ POST   /api/v1/sire/rvie/ventas/descargar      # Descarga directa propuesta
 GET    /api/v1/sire/rvie/ventas/comprobantes   # Listar comprobantes
 ```
 
-### 🔧 **SIRE Maintenance Endpoints**
+### � **Accounting + PLE Endpoints**
 ```http
-POST   /api/v1/sire/maintenance/cleanup/tickets   # Limpiar tickets expirados
-POST   /api/v1/sire/maintenance/cleanup/files     # Limpiar archivos antiguos
-GET    /api/v1/sire/maintenance/stats             # Estadísticas sistema
+# Gestión Libros Diarios
+GET    /api/v1/libros-diario                    # Lista libros diarios
+POST   /api/v1/libros-diario                    # Crear libro diario
+GET    /api/v1/libros-diario/{id}               # Obtener libro
+PUT    /api/v1/libros-diario/{id}               # Actualizar libro
+DELETE /api/v1/libros-diario/{id}               # Eliminar libro
+
+# PLE (Programa Libros Electrónicos) - SUNAT
+POST   /api/v1/libros-diario/{id}/export-ple           # Exportar a PLE
+POST   /api/v1/libros-diario/{id}/validate-ple         # Validar para PLE
+GET    /api/v1/libros-diario/{id}/preview-ple          # Vista previa PLE
+GET    /api/v1/libros-diario/{id}/stats-ple            # Estadísticas PLE
+GET    /api/v1/libros-diario/{id}/report-ple           # Reporte validación
+GET    /api/v1/libros-diario/{id}/download-ple         # Descargar archivo
+POST   /api/v1/libros-diario/{id}/validate-and-export-ple # Validar y exportar
+
+# Tablas SUNAT (12 tablas oficiales)
+GET    /api/v1/sunat/tablas                     # Lista todas las tablas
+GET    /api/v1/sunat/tablas/{tabla}             # Obtener tabla específica
+POST   /api/v1/sunat/buscar/{tabla}             # Buscar en tabla
+POST   /api/v1/sunat/validar/{tabla}            # Validar código
+GET    /api/v1/sunat/estadisticas               # Estadísticas tablas
 ```
 
 ### 🔍 **Consultas API Endpoints**
@@ -453,6 +536,77 @@ POST   /api/v1/socios-negocio/consulta-dni        # Consultar DNI específico
 }
 ```
 
+#### 📊 **libros_diario**
+```javascript
+{
+  "_id": ObjectId,
+  "nombre": "Libro Diario Enero 2025",
+  "empresa_id": ObjectId,               // Ref a companies
+  "ejercicio": 2025,
+  "mes": 1,
+  "estado": "ABIERTO",                  // ABIERTO, CERRADO
+  "created_at": ISODate,
+  "updated_at": ISODate,
+  
+  // Asientos contables
+  "asientos": [
+    {
+      "numero": "001",
+      "fecha": ISODate,
+      "descripcion": "Asiento de apertura",
+      "referencia": "REF-001",
+      "movimientos": [
+        {
+          "item": 1,
+          "cuenta_contable": "10111",      // Código plan contable
+          "descripcion": "Caja",
+          "debe": 10000.00,
+          "haber": 0.00,
+          "tipo_movimiento": "D",          // D=Debe, H=Haber
+          "centro_costo": "CC001",
+          "documento_referencia": "001-123",
+          
+          // Datos enriquecidos por PLE (automático)
+          "_enriquecido_sunat": true,
+          "cuenta_contable_descripcion": "Caja y bancos",
+          "_fecha_enriquecimiento": ISODate
+        }
+      ]
+    }
+  ],
+  
+  // Metadatos PLE
+  "ple_metadata": {
+    "ultimo_export": ISODate,
+    "archivo_ple_generado": "LE201234567892025010120250100510011.TXT",
+    "validacion_sunat": {
+      "errores": 0,
+      "warnings": 2,
+      "fecha_validacion": ISODate
+    }
+  }
+}
+```
+
+#### 🏛️ **sunat_tablas** (12 tablas oficiales)
+```javascript
+{
+  "_id": ObjectId,
+  "tabla": "5",                         // Número tabla SUNAT (1-12)
+  "nombre": "Plan de Cuentas",
+  "codigo": "10111",
+  "descripcion": "Efectivo y equivalentes de efectivo - Caja",
+  "estado": "ACTIVO",
+  "fecha_inicio": ISODate,
+  "fecha_fin": null,
+  "metadata": {
+    "nivel": 5,
+    "tipo_cuenta": "DETALLE",
+    "naturaleza": "DEUDORA"
+  }
+}
+```
+
 ### Índices Recomendados
 ```javascript
 // Empresas
@@ -475,6 +629,17 @@ db.socios_negocio.createIndex({"numero_documento": 1}, {unique: true})
 db.socios_negocio.createIndex({"tipo_documento": 1})
 db.socios_negocio.createIndex({"is_active": 1})
 db.socios_negocio.createIndex({"created_at": -1})
+
+// Libros Diarios
+db.libros_diario.createIndex({"empresa_id": 1, "ejercicio": 1, "mes": 1})
+db.libros_diario.createIndex({"created_at": -1})
+db.libros_diario.createIndex({"estado": 1})
+db.libros_diario.createIndex({"asientos.fecha": 1})
+
+// Tablas SUNAT
+db.sunat_tablas.createIndex({"tabla": 1, "codigo": 1}, {unique: true})
+db.sunat_tablas.createIndex({"tabla": 1, "estado": 1})
+db.sunat_tablas.createIndex({"descripcion": "text"})
 ```
 
 ---
@@ -549,7 +714,11 @@ backend/
 ├── test_sire_integration.py       # Tests integración SIRE
 ├── test_socios_negocio_basic.py   # Tests socios de negocio
 ├── diagnostico_propuestas.py      # Diagnóstico propuestas
-└── token_fresco_postman.py        # Utilidad tokens
+├── token_fresco_postman.py        # Utilidad tokens
+├── test_ple_fase1.py              # Tests PLE - Core
+├── test_ple_fase2.py              # Tests PLE - Integración SUNAT
+├── test_ple_fase3.py              # Tests PLE - Servicios y API
+└── test_simple_verificacion.py    # Verificación rápida PLE
 ```
 
 ### Comandos de Desarrollo
@@ -564,10 +733,20 @@ DEBUG=True uvicorn app.main:app --reload --port 8000
 python test_endpoints_oficiales.py
 python test_socios_negocio_basic.py
 
+# Testing PLE (Sistema Libros Electrónicos)
+python test_ple_fase1.py          # Core PLE
+python test_ple_fase2.py          # Integración SUNAT
+python test_ple_fase3.py          # Servicios y API
+
 # Probar consultas API
 curl -X POST "http://localhost:8000/api/v1/consultas/ruc" \
      -H "Content-Type: application/json" \
      -d '{"ruc": "20100022479"}'
+
+# Probar exportación PLE
+curl -X POST "http://localhost:8000/api/v1/libros-diario/{id}/export-ple" \
+     -H "Content-Type: application/json" \
+     -d '{"validar_sunat": true, "enriquecer_datos": true}'
 ```
 
 ---
@@ -675,6 +854,22 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ---
 
 ## 📋 Changelog Reciente
+
+### ✅ **Agosto 2025 - Sistema PLE Completo Implementado**
+- **NUEVO**: Sistema completo PLE (Programa Libros Electrónicos) para SUNAT
+- **NUEVO**: Exportación Libro Diario a formato oficial SUNAT
+- **NUEVO**: Validación contra 12 tablas oficiales SUNAT (Plan de Cuentas, etc.)
+- **NUEVO**: Enriquecimiento automático de datos contables
+- **NUEVO**: 7 endpoints API RESTful para integración PLE
+- **NUEVO**: Módulo `ple/` con 4 componentes especializados:
+  - `PLEAnalyzer` - Análisis de datos contables
+  - `PLEFormatter` - Formateo según especificaciones SUNAT
+  - `PLEGenerator` - Generación archivos PLE
+  - `PLESUNATValidator` - Validación + enriquecimiento SUNAT
+- **MEJORA**: LibroDiarioService extendido con métodos PLE
+- **MEJORA**: Schemas Pydantic v2 para todas las operaciones PLE
+- **TESTING**: Pruebas exhaustivas en 3 fases (Core, SUNAT, API)
+- **PRODUCCIÓN**: Sistema listo para uso en producción
 
 ### ✅ **Agosto 2025 - Módulo Consultas API y Socios de Negocio**
 - **Nuevo**: Módulo `consultasapi` para centralizar consultas RUC/DNI
