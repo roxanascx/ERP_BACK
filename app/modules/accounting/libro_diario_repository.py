@@ -161,14 +161,14 @@ class LibroDiarioRepository:
             asiento_data["libroId"] = libro_id
             asiento_doc = self.asiento_model.to_dict(asiento_data)
             
-            # Insertar asiento
-            result = self.asiento_model.collection.insert_one(asiento_doc)
+            # Insertar asiento (CORREGIDO: agregar await)
+            result = await self.asiento_model.collection.insert_one(asiento_doc)
             
-            # Actualizar totales del libro
-            self.libro_model.actualizar_totales(libro_id)
+            # Actualizar totales del libro (CORREGIDO: agregar await)
+            await self.libro_model.actualizar_totales(libro_id)
             
-            # Obtener asiento creado
-            asiento_creado = self.asiento_model.collection.find_one({"_id": result.inserted_id})
+            # Obtener asiento creado (CORREGIDO: agregar await)
+            asiento_creado = await self.asiento_model.collection.find_one({"_id": result.inserted_id})
             return self.asiento_model.from_dict(asiento_creado)
             
         except DuplicateKeyError:
@@ -212,14 +212,14 @@ class LibroDiarioRepository:
     async def eliminar_asiento(self, libro_id: str, asiento_id: str) -> bool:
         """Eliminar un asiento contable"""
         try:
-            result = self.asiento_model.collection.delete_one({
+            result = await self.asiento_model.collection.delete_one({
                 "_id": ObjectId(asiento_id),
                 "libroId": libro_id
             })
             
             if result.deleted_count > 0:
-                # Actualizar totales del libro
-                self.libro_model.actualizar_totales(libro_id)
+                # Actualizar totales del libro (método asíncrono)
+                await self.libro_model.actualizar_totales(libro_id)
                 return True
             
             return False

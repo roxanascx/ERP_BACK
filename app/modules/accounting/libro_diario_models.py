@@ -126,7 +126,7 @@ class LibroDiarioModel:
         doc["id"] = str(doc.pop("_id"))
         return doc
     
-    def calcular_totales(self, libro_id: str) -> Dict[str, float]:
+    async def calcular_totales(self, libro_id: str) -> Dict[str, float]:
         """Calcular totales de debe y haber para un libro"""
         pipeline = [
             {"$match": {"libroId": libro_id}},
@@ -138,7 +138,10 @@ class LibroDiarioModel:
             }}
         ]
         
-        result = list(self.asientos_collection.aggregate(pipeline))
+        result = []
+        async for doc in self.asientos_collection.aggregate(pipeline):
+            result.append(doc)
+            
         if result:
             return {
                 "totalDebe": result[0]["totalDebe"],
@@ -148,11 +151,11 @@ class LibroDiarioModel:
         
         return {"totalDebe": 0.0, "totalHaber": 0.0, "totalAsientos": 0}
     
-    def actualizar_totales(self, libro_id: str):
+    async def actualizar_totales(self, libro_id: str):
         """Actualizar los totales calculados en el libro"""
-        totales = self.calcular_totales(libro_id)
+        totales = await self.calcular_totales(libro_id)
         
-        self.collection.update_one(
+        await self.collection.update_one(
             {"_id": ObjectId(libro_id)},
             {
                 "$set": {
