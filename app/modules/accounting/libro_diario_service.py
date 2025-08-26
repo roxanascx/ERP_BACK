@@ -445,21 +445,29 @@ class LibroDiarioService:
             libro = await self.repository.obtener_libro(libro_id)
             if not libro:
                 raise ValueError(f"Libro diario {libro_id} no encontrado")
-            
-            # 2. Obtener información de la empresa
+
+            # 2. Transformar datos para exportación PLE
+            datos_transformados = self._transformar_para_validacion_sunat(libro)
+
+            # 3. Obtener información de la empresa
             empresa_info = await self._obtener_info_empresa(libro.get("empresaId"))
             
-            # 3. Configurar opciones por defecto
+            # 4. Configurar opciones por defecto
             from app.modules.accounting.ple import PLEOptions
             
             opciones_ple = PLEOptions()
+            # Configuración estándar para producción
+            opciones_ple.validar_antes_generar = False  # Deshabilitado porque usamos datos transformados
+            opciones_ple.validar_con_sunat = True       # Habilitado para validación SUNAT
+            opciones_ple.enriquecer_con_sunat = False   # Opcional, puede ser lento
+            
             if opciones:
                 # Actualizar opciones con las proporcionadas
                 for key, value in opciones.items():
                     if hasattr(opciones_ple, key):
                         setattr(opciones_ple, key, value)
             
-            # 4. Generar archivo PLE
+            # 5. Generar archivo PLE
             from app.modules.accounting.ple import PLEGenerator
             from datetime import datetime
             
@@ -476,13 +484,13 @@ class LibroDiarioService:
             
             # Generar archivo PLE
             archivo_ple = await generator.generar_libro_diario_ple(
-                libro_data=libro,
+                libro_data=datos_transformados,
                 empresa_ruc=empresa_info.get("ruc", "00000000000"),
                 periodo=periodo,
                 opciones=opciones_ple
             )
             
-            # 5. Preparar respuesta
+            # 6. Preparar respuesta
             resultado = {
                 "exito": True,
                 "libro_id": libro_id,
@@ -531,17 +539,21 @@ class LibroDiarioService:
             if not libro:
                 raise ValueError(f"Libro diario {libro_id} no encontrado")
             
-            # 2. Realizar validación básica
+            # 2. Transformar datos para validación SUNAT
+            datos_transformados = self._transformar_para_validacion_sunat(libro)
+            
+            # 3. Realizar validación básica
             from app.modules.accounting.ple import PLEDataAnalyzer
             
             analyzer = PLEDataAnalyzer()
-            resultado_basico = await analyzer.analizar_libro_diario(libro)
+            # Usar datos transformados también para validación básica
+            resultado_basico = await analyzer.analizar_libro_diario(datos_transformados)
             
-            # 3. Realizar validación SUNAT
+            # 4. Realizar validación SUNAT
             from app.modules.accounting.ple import PLESUNATValidator
             
             validator = PLESUNATValidator()
-            resultado_sunat = await validator.validar_libro_diario_completo(libro)
+            resultado_sunat = await validator.validar_libro_diario_completo(datos_transformados)
             
             # 4. Preparar respuesta consolidada
             resultado = {
@@ -580,9 +592,16 @@ class LibroDiarioService:
                             "mensaje": w.mensaje
                         } for w in resultado_sunat.warnings
                     ],
-                    "datos_enriquecidos": resultado_sunat.datos_enriquecidos,
-                    "estadisticas": resultado_sunat.estadisticas,
-                    "tiempo_validacion": resultado_sunat.tiempo_validacion
+                    "datos_enriquecidos": len(resultado_sunat.datos_enriquecidos) if hasattr(resultado_sunat, 'datos_enriquecidos') and resultado_sunat.datos_enriquecidos else 0,
+                    "estadisticas": {
+                        "total_errores": len(resultado_sunat.errores) if hasattr(resultado_sunat, 'errores') else 0,
+                        "total_warnings": len(resultado_sunat.warnings) if hasattr(resultado_sunat, 'warnings') else 0,
+                        "errores_criticos": len([e for e in resultado_sunat.errores if hasattr(e, 'critico') and e.critico]) if hasattr(resultado_sunat, 'errores') else 0,
+                        "porcentaje_validado": (resultado_sunat.registros_validados / max(resultado_sunat.total_registros, 1)) * 100 if hasattr(resultado_sunat, 'registros_validados') and hasattr(resultado_sunat, 'total_registros') else 0.0,
+                        "cuentas_validadas": getattr(resultado_sunat.estadisticas, 'cuentas_validadas', 0) if hasattr(resultado_sunat, 'estadisticas') else 0,
+                        "tiempo_validacion": getattr(resultado_sunat, 'tiempo_validacion', 0.0)
+                    },
+                    "tiempo_validacion": getattr(resultado_sunat, 'tiempo_validacion', 0.0)
                 }
             }
             
@@ -940,3 +959,68 @@ class LibroDiarioService:
         """Generar reporte consolidado en PDF (implementación pendiente)"""
         # TODO: Implementar reporte consolidado en PDF
         raise NotImplementedError("Reporte consolidado en PDF pendiente de implementación")
+
+    def _transformar_para_validacion_sunat(self, libro_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Transformar datos del libro diario al formato esperado por el validador SUNAT.
+        
+        Convierte la estructura plana de asientos individuales en asientos agrupados por documento.
+        """
+        try:
+            asientos_originales = libro_data.get("asientos", [])
+            
+            # Agrupar movimientos por número de documento
+            asientos_agrupados = {}
+            
+            for asiento in asientos_originales:
+                numero_doc = asiento.get("numeroDocumento", "")
+                if not numero_doc:
+                    # Si no tiene número de documento, usar el numeroCorrelativo
+                    numero_doc = asiento.get("numeroCorrelativo", "SIN_DOC")
+                
+                if numero_doc not in asientos_agrupados:
+                    asientos_agrupados[numero_doc] = {
+                        "numero_asiento": numero_doc,
+                        "fecha": asiento.get("fecha", ""),
+                        "glosa": asiento.get("glosa", ""),
+                        "codigo_libro": asiento.get("codigoLibro", "5.1"),
+                        "movimientos": []
+                    }
+                
+                # Convertir asiento individual a movimiento
+                movimiento = {
+                    "cuenta_contable": asiento.get("cuentaContable", {}).get("codigo", ""),
+                    "cuenta_contable_descripcion": asiento.get("cuentaContable", {}).get("denominacion", ""),
+                    "debe": float(asiento.get("debe", 0.0)),
+                    "haber": float(asiento.get("haber", 0.0)),
+                    "numero_correlativo": asiento.get("numeroCorrelativo", ""),
+                    "fecha": asiento.get("fecha", ""),
+                    "glosa": asiento.get("glosa", "")
+                }
+                
+                asientos_agrupados[numero_doc]["movimientos"].append(movimiento)
+            
+            # Crear estructura final
+            datos_transformados = {
+                "id": libro_data.get("id", ""),
+                "empresaId": libro_data.get("empresaId", ""),
+                "ruc": libro_data.get("ruc", ""),
+                "razonSocial": libro_data.get("razonSocial", ""),
+                "descripcion": libro_data.get("descripcion", ""),
+                "periodo": libro_data.get("periodo", ""),
+                "estado": libro_data.get("estado", ""),
+                "moneda": libro_data.get("moneda", "PEN"),
+                "tipoLibro": libro_data.get("tipoLibro", "5.1"),
+                "asientos": list(asientos_agrupados.values()),
+                "totalDebe": libro_data.get("totalDebe", 0.0),
+                "totalHaber": libro_data.get("totalHaber", 0.0)
+            }
+            
+            logger.info(f"Transformación completada: {len(asientos_originales)} movimientos → {len(asientos_agrupados)} asientos")
+            
+            return datos_transformados
+            
+        except Exception as e:
+            logger.error(f"Error transformando datos para validación SUNAT: {str(e)}")
+            # En caso de error, devolver los datos originales
+            return libro_data

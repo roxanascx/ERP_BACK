@@ -51,7 +51,7 @@ from app.modules.accounting.schemas import (
 from app.modules.accounting.import_service import PlanContableImportService
 from app.modules.accounting.sunat_routes import router as sunat_router
 
-router = APIRouter(prefix="/accounting", tags=["Accounting"])
+router = APIRouter(tags=["Accounting"])
 
 # Incluir rutas de tablas SUNAT
 router.include_router(sunat_router)

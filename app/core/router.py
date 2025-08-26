@@ -148,5 +148,6 @@ from ..modules.accounting import routes as accounting_routes
 
 api_router.include_router(
     accounting_routes.router,
+    prefix="/accounting",
     tags=["Accounting"]
 )
