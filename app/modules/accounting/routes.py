@@ -12,10 +12,11 @@ Las rutas son esqueleto; la lógica se implementará en services.py y repositori
 """
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Dict
 import io
 
 from app.modules.accounting.services import AccountingService
+from app.modules.accounting.libro_diario_service import LibroDiarioService
 from app.modules.accounting.schemas import (
     CuentaContableCreate, 
     CuentaContableResponse,
@@ -23,7 +24,22 @@ from app.modules.accounting.schemas import (
     ImportResult,
     PlanContableInfo,
     SwitchPlanRequest,
-    ImportFileRequest
+    ImportFileRequest,
+    # Schemas de Libro Diario
+    LibroDiarioCreate,
+    LibroDiarioUpdate,
+    LibroDiarioResponse,
+    LibroDiarioCreateV2,
+    LibroDiarioResponseV2,
+    AsientoContableCreate,
+    AsientoContableUpdate,
+    AsientoContableResponse,
+    AsientoContableCreateV2,
+    AsientoContableResponseV2,
+    FiltrosLibroDiario,
+    ResumenLibroDiario,
+    ExportOptions,
+    CuentaContableLookup
 )
 from app.modules.accounting.import_service import PlanContableImportService
 
@@ -417,3 +433,297 @@ async def delete_plan_personalizado(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error eliminando plan personalizado: {str(e)}")
+
+
+# ================================
+# RUTAS PARA LIBRO DIARIO
+# ================================
+
+@router.post("/libro-diario/", response_model=LibroDiarioResponse)
+async def crear_libro_diario(
+    libro_data: LibroDiarioCreateV2,
+    usuario_id: Optional[str] = None
+):
+    """Crear un nuevo libro diario"""
+    try:
+        service = LibroDiarioService()
+        return await service.crear_libro_diario_v2(libro_data, usuario_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/libro-diario/resumen", response_model=ResumenLibroDiario)
+async def obtener_resumen_libro_diario(
+    empresa_id: str = Query(..., description="ID de la empresa"),
+    periodo: Optional[str] = Query(None, description="Período específico")
+):
+    """Obtener resumen estadístico del libro diario"""
+    try:
+        service = LibroDiarioService()
+        return await service.obtener_resumen(empresa_id, periodo)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/libro-diario/{libro_id}", response_model=LibroDiarioResponse)
+async def obtener_libro_diario(libro_id: str):
+    """Obtener un libro diario por ID"""
+    try:
+        service = LibroDiarioService()
+        libro = await service.obtener_libro_diario(libro_id)
+        if not libro:
+            raise HTTPException(status_code=404, detail="Libro diario no encontrado")
+        return libro
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/libro-diario/{libro_id}", response_model=LibroDiarioResponse)
+async def actualizar_libro_diario(
+    libro_id: str,
+    libro_data: LibroDiarioUpdate,
+    usuario_id: Optional[str] = None
+):
+    """Actualizar un libro diario"""
+    try:
+        service = LibroDiarioService()
+        libro = await service.actualizar_libro_diario(libro_id, libro_data, usuario_id)
+        if not libro:
+            raise HTTPException(status_code=404, detail="Libro diario no encontrado")
+        return libro
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/libro-diario/{libro_id}")
+async def eliminar_libro_diario(libro_id: str):
+    """Eliminar un libro diario"""
+    try:
+        service = LibroDiarioService()
+        resultado = await service.eliminar_libro_diario(libro_id)
+        if not resultado:
+            raise HTTPException(status_code=404, detail="Libro diario no encontrado")
+        return {"message": "Libro diario eliminado exitosamente"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/libro-diario/empresa/{empresa_id}", response_model=List[LibroDiarioResponse])
+async def listar_libros_por_empresa(
+    empresa_id: str,
+    periodo: Optional[str] = Query(None, description="Período en formato YYYY o YYYY-MM"),
+    fecha_desde: Optional[str] = Query(None, description="Fecha desde (YYYY-MM-DD)"),
+    fecha_hasta: Optional[str] = Query(None, description="Fecha hasta (YYYY-MM-DD)"),
+    estado: Optional[str] = Query(None, description="Estado del libro"),
+    busqueda: Optional[str] = Query(None, description="Búsqueda en descripción"),
+    cuenta_contable: Optional[str] = Query(None, description="Código de cuenta contable")
+):
+    """Listar libros diario de una empresa con filtros"""
+    try:
+        # Construir filtros
+        filtros = FiltrosLibroDiario(
+            empresaId=empresa_id,
+            periodo=periodo,
+            fechaDesde=fecha_desde,
+            fechaHasta=fecha_hasta,
+            estado=estado,
+            busqueda=busqueda,
+            cuentaContable=cuenta_contable
+        )
+        
+        service = LibroDiarioService()
+        return await service.listar_libros_por_empresa_v2(empresa_id, filtros)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ================================
+# RUTAS PARA ASIENTOS CONTABLES
+# ================================
+
+@router.post("/libro-diario/{libro_id}/asientos", response_model=AsientoContableResponse)
+async def agregar_asiento(
+    libro_id: str,
+    asiento_data: AsientoContableCreate,
+    usuario_id: Optional[str] = None
+):
+    """Agregar un asiento contable a un libro"""
+    try:
+        service = LibroDiarioService()
+        return await service.agregar_asiento(libro_id, asiento_data, usuario_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/libro-diario/{libro_id}/asientos/{asiento_id}", response_model=AsientoContableResponse)
+async def actualizar_asiento(
+    libro_id: str,
+    asiento_id: str,
+    asiento_data: AsientoContableUpdate,
+    usuario_id: Optional[str] = None
+):
+    """Actualizar un asiento contable"""
+    try:
+        service = LibroDiarioService()
+        asiento = await service.actualizar_asiento(libro_id, asiento_id, asiento_data, usuario_id)
+        if not asiento:
+            raise HTTPException(status_code=404, detail="Asiento no encontrado")
+        return asiento
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/libro-diario/{libro_id}/asientos/{asiento_id}")
+async def eliminar_asiento(libro_id: str, asiento_id: str):
+    """Eliminar un asiento contable"""
+    try:
+        service = LibroDiarioService()
+        resultado = await service.eliminar_asiento(libro_id, asiento_id)
+        if not resultado:
+            raise HTTPException(status_code=404, detail="Asiento no encontrado")
+        return {"message": "Asiento eliminado exitosamente"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ================================
+# RUTAS DE VALIDACIÓN Y UTILIDADES
+# ================================
+
+@router.post("/libro-diario/{libro_id}/validar", response_model=ValidationResult)
+async def validar_libro_diario(libro_id: str):
+    """Validar un libro diario completo"""
+    try:
+        service = LibroDiarioService()
+        return await service.validar_libro_diario(libro_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/libro-diario/validar-asiento", response_model=ValidationResult)
+async def validar_asiento(asiento: AsientoContableCreate):
+    """Validar un asiento contable individualmente"""
+    try:
+        service = LibroDiarioService()
+        await service._validar_asiento(asiento)
+        return ValidationResult(isValid=True, errors=[], warnings=[])
+    except ValueError as e:
+        return ValidationResult(isValid=False, errors=[str(e)], warnings=[])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/libro-diario/siguiente-correlativo")
+async def obtener_siguiente_correlativo(
+    empresa_id: str = Query(..., description="ID de la empresa"),
+    periodo: str = Query(..., description="Período en formato YYYY-MM")
+):
+    """Obtener el siguiente número correlativo disponible"""
+    try:
+        service = LibroDiarioService()
+        correlativo = await service.obtener_siguiente_correlativo(empresa_id, periodo)
+        return {"numeroCorrelativo": correlativo}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/plan/cuentas/buscar", response_model=List[CuentaContableLookup])
+async def buscar_cuentas_contables(
+    q: str = Query(..., description="Término de búsqueda"),
+    empresa_id: str = Query(..., description="ID de la empresa"),
+    activos: bool = Query(True, description="Solo cuentas activas"),
+    limit: int = Query(10, description="Límite de resultados")
+):
+    """Buscar cuentas contables para autocompletado"""
+    try:
+        service = LibroDiarioService()
+        cuentas = await service.buscar_cuentas_contables(q, empresa_id, limit)
+        return cuentas
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ================================
+# RUTAS DE EXPORTACIÓN
+# ================================
+
+@router.post("/libro-diario/{libro_id}/export")
+async def exportar_libro_diario(
+    libro_id: str,
+    opciones: ExportOptions
+):
+    """Exportar libro diario en el formato especificado"""
+    try:
+        service = LibroDiarioService()
+        data = await service.exportar_libro_diario(libro_id, opciones)
+        
+        # Determinar content type según formato
+        content_types = {
+            "excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "pdf": "application/pdf",
+            "txt": "text/plain"
+        }
+        
+        filename_extensions = {
+            "excel": "xlsx",
+            "pdf": "pdf", 
+            "txt": "txt"
+        }
+        
+        filename = f"libro-diario.{filename_extensions[opciones.formato]}"
+        
+        return StreamingResponse(
+            io.BytesIO(data),
+            media_type=content_types[opciones.formato],
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/libro-diario/reporte/{empresa_id}")
+async def generar_reporte_empresa(
+    empresa_id: str,
+    request_data: Dict[str, Any]
+):
+    """Generar reporte consolidado por empresa"""
+    try:
+        filtros_data = request_data.get("filtros", {})
+        formato = request_data.get("formato", "excel")
+        
+        # Construir filtros
+        filtros = FiltrosLibroDiario(**filtros_data)
+        
+        service = LibroDiarioService()
+        data = await service.generar_reporte_empresa(empresa_id, filtros, formato)
+        
+        # Determinar content type
+        content_types = {
+            "excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "pdf": "application/pdf"
+        }
+        
+        filename_extensions = {
+            "excel": "xlsx",
+            "pdf": "pdf"
+        }
+        
+        filename = f"reporte-libro-diario.{filename_extensions[formato]}"
+        
+        return StreamingResponse(
+            io.BytesIO(data),
+            media_type=content_types[formato],
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -303,4 +303,3 @@ class AccountingService:
         # Búsqueda por texto en MongoDB (requiere índice de texto)
         docs = await self.plan_service.repo.buscar_texto(termino, filtros, limit)
         return [self.plan_service._doc_to_response(d) for d in docs]
-

@@ -1,6 +1,7 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+from enum import Enum
 
 
 class CuentaContableCreate(BaseModel):
@@ -79,3 +80,257 @@ class ImportFileRequest(BaseModel):
     filename: str
     content: str  # Contenido del archivo en base64 o texto plano
     fecha_modificacion: Optional[datetime]
+
+
+# ================================
+# SCHEMAS PARA LIBRO DIARIO V2 (FRONTEND-ALIGNED)
+# ================================
+
+class EstadoLibroDiario(str, Enum):
+    BORRADOR = "borrador"
+    FINALIZADO = "finalizado"
+    ENVIADO = "enviado"
+
+
+class CuentaContableLookup(BaseModel):
+    """Schema para el autocompletado de cuentas contables"""
+    codigo: str
+    denominacion: str
+    naturaleza: str = Field(..., pattern="^(DEUDORA|ACREEDORA|DEUDORA/ACREEDORA)$")
+    nivel: int
+    activa: bool
+
+
+class DetalleAsientoBase(BaseModel):
+    """Schema para detalle de asiento contable (línea individual)"""
+    codigoCuenta: str
+    denominacionCuenta: str
+    descripcion: str
+    debe: Optional[float] = Field(default=0.0, ge=0)
+    haber: Optional[float] = Field(default=0.0, ge=0)
+    
+    @validator('debe', 'haber')
+    def validate_debe_haber(cls, v, values):
+        # Al menos uno debe tener valor
+        if 'debe' in values and 'haber' in values:
+            if values.get('debe', 0) == 0 and values.get('haber', 0) == 0:
+                raise ValueError('Debe especificar un valor en Debe o Haber')
+            if values.get('debe', 0) > 0 and values.get('haber', 0) > 0:
+                raise ValueError('No puede tener valores en Debe y Haber al mismo tiempo')
+        return v
+
+
+class AsientoContableBaseV2(BaseModel):
+    """Schema base para asientos contables v2 (alineado con frontend)"""
+    numero: str  # Número correlativo del asiento
+    fecha: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")  # YYYY-MM-DD
+    descripcion: str = Field(..., max_length=500)  # Glosa o descripción
+    detalles: List[DetalleAsientoBase] = Field(..., min_items=2)  # Al menos 2 líneas
+    
+    @validator('detalles')
+    def validate_detalles_balanceados(cls, v):
+        total_debe = sum(detalle.debe or 0 for detalle in v)
+        total_haber = sum(detalle.haber or 0 for detalle in v)
+        
+        if abs(total_debe - total_haber) > 0.01:  # Tolerancia de 1 centavo
+            raise ValueError(f'El asiento debe estar balanceado. Debe: {total_debe}, Haber: {total_haber}')
+        
+        return v
+
+
+class AsientoContableCreateV2(AsientoContableBaseV2):
+    """Schema para crear asientos contables v2"""
+    empresaId: Optional[str] = None
+    libroId: Optional[str] = None
+
+
+class AsientoContableResponseV2(AsientoContableBaseV2):
+    """Schema para respuesta de asientos contables v2"""
+    id: str
+    empresaId: Optional[str] = None
+    libroId: Optional[str] = None
+    usuarioCreacion: Optional[str] = None
+    fechaCreacion: Optional[datetime] = None  # Cambiar a datetime
+    fechaModificacion: Optional[datetime] = None  # Cambiar a datetime
+
+    class Config:
+        from_attributes = True
+
+
+class LibroDiarioBaseV2(BaseModel):
+    """Schema base para libro diario v2"""
+    descripcion: str = Field(..., max_length=200)
+    periodo: str = Field(..., pattern=r"^\d{4}(-\d{2})?$")  # YYYY o YYYY-MM
+    estado: EstadoLibroDiario = EstadoLibroDiario.BORRADOR
+    moneda: str = Field(default="PEN")
+    tipoLibro: str = Field(default="5.1")
+
+
+class LibroDiarioCreateV2(LibroDiarioBaseV2):
+    """Schema para crear libro diario v2"""
+    empresaId: str
+    ruc: Optional[str] = None
+    razonSocial: Optional[str] = None
+
+
+class LibroDiarioResponseV2(LibroDiarioBaseV2):
+    """Schema para respuesta de libro diario v2 (alineado con frontend)"""
+    id: str
+    empresaId: str
+    ruc: str
+    razonSocial: str
+    asientos: List[AsientoContableResponseV2] = []
+    totalDebe: float = 0.0
+    totalHaber: float = 0.0
+    fechaCreacion: Optional[datetime] = None  # Cambiar a datetime
+    fechaModificacion: Optional[datetime] = None  # Cambiar a datetime
+    usuarioCreacion: Optional[str] = None
+    usuarioModificacion: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ================================
+# SCHEMAS LEGACY (MANTENER COMPATIBILIDAD)
+# ================================
+
+class AsientoContableBase(BaseModel):
+    """Schema base para asientos contables"""
+    numeroCorrelativo: str
+    fecha: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")  # YYYY-MM-DD
+    glosa: str = Field(..., max_length=500)
+    codigoLibro: str = Field(default="5.1")  # Libro Diario por defecto
+    numeroDocumento: str = Field(..., max_length=50)
+    cuentaContable: Dict[str, str]  # {codigo: str, denominacion: str}
+    debe: float = Field(ge=0)
+    haber: float = Field(ge=0)
+    
+    @validator('cuentaContable')
+    def validate_cuenta_contable(cls, v):
+        if not isinstance(v, dict):
+            raise ValueError('cuentaContable debe ser un diccionario')
+        if 'codigo' not in v or 'denominacion' not in v:
+            raise ValueError('cuentaContable debe tener codigo y denominacion')
+        return v
+    
+    @validator('debe', 'haber')
+    def validate_debe_haber(cls, v, values):
+        if 'debe' in values and 'haber' in values:
+            if values['debe'] > 0 and values['haber'] > 0:
+                raise ValueError('No puede tener valores en Debe y Haber al mismo tiempo')
+            if values['debe'] == 0 and values['haber'] == 0:
+                raise ValueError('Debe especificar un valor en Debe o Haber')
+        return v
+
+
+class AsientoContableCreate(AsientoContableBase):
+    """Schema para crear asientos contables"""
+    empresaId: Optional[str] = None
+
+
+class AsientoContableUpdate(BaseModel):
+    """Schema para actualizar asientos contables"""
+    numeroCorrelativo: Optional[str] = None
+    fecha: Optional[str] = None
+    glosa: Optional[str] = None
+    codigoLibro: Optional[str] = None
+    numeroDocumento: Optional[str] = None
+    cuentaContable: Optional[Dict[str, str]] = None
+    debe: Optional[float] = None
+    haber: Optional[float] = None
+
+
+class AsientoContableResponse(AsientoContableBase):
+    """Schema para respuesta de asientos contables"""
+    id: str
+    empresaId: str
+    usuarioCreacion: Optional[str] = None
+    fechaCreacion: Optional[datetime] = None
+    fechaModificacion: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class LibroDiarioBase(BaseModel):
+    """Schema base para libro diario"""
+    descripcion: str = Field(..., max_length=200)
+    periodo: str = Field(..., pattern=r"^\d{4}(-\d{2})?$")  # YYYY o YYYY-MM
+    estado: EstadoLibroDiario = EstadoLibroDiario.BORRADOR
+    moneda: str = Field(default="PEN")
+    tipoLibro: str = Field(default="5.1")
+
+
+class LibroDiarioCreate(LibroDiarioBase):
+    """Schema para crear libro diario"""
+    empresaId: str
+    ruc: Optional[str] = None
+    razonSocial: Optional[str] = None
+
+
+class LibroDiarioUpdate(BaseModel):
+    """Schema para actualizar libro diario"""
+    descripcion: Optional[str] = None
+    periodo: Optional[str] = None
+    estado: Optional[EstadoLibroDiario] = None
+
+
+class LibroDiarioResponse(LibroDiarioBase):
+    """Schema para respuesta de libro diario"""
+    id: str
+    empresaId: str
+    ruc: str
+    razonSocial: str
+    asientos: List[AsientoContableResponse] = []
+    totalDebe: float = 0.0
+    totalHaber: float = 0.0
+    fechaCreacion: Optional[datetime] = None
+    fechaModificacion: Optional[datetime] = None
+    usuarioCreacion: Optional[str] = None
+    usuarioModificacion: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class FiltrosLibroDiario(BaseModel):
+    """Schema para filtros de búsqueda"""
+    empresaId: Optional[str] = None
+    periodo: Optional[str] = None
+    fechaDesde: Optional[str] = None
+    fechaHasta: Optional[str] = None
+    estado: Optional[EstadoLibroDiario] = None
+    busqueda: Optional[str] = None
+    cuentaContable: Optional[str] = None
+
+
+class ResumenLibroDiario(BaseModel):
+    """Schema para resumen estadístico"""
+    totalLibros: int
+    totalAsientos: int
+    totalDebe: float
+    totalHaber: float
+    diferencia: float
+    balanceado: bool
+    periodos: List[str]
+    ultimaModificacion: datetime
+    asientosPorEstado: Dict[str, int]
+    ultimoLibro: Optional[Dict[str, Any]] = None
+
+
+class ValidationResult(BaseModel):
+    """Schema para resultados de validación"""
+    isValid: bool
+    errors: List[str] = []
+    warnings: List[str] = []
+    asientosSinBalancear: List[str] = []  # números correlativos
+
+
+class ExportOptions(BaseModel):
+    """Schema para opciones de exportación"""
+    formato: str = Field(..., pattern="^(excel|pdf|txt)$")
+    incluirTotales: bool = True
+    incluirResumen: bool = True
+    fechaDesde: Optional[str] = None
+    fechaHasta: Optional[str] = None
