@@ -100,8 +100,6 @@ class PLEDataAnalyzer:
             PLEAnalysisResult: Resultado completo del análisis
         """
         try:
-            self.logger.info(f"Iniciando análisis PLE del libro diario")
-            
             # 1. Extraer asientos contables
             asientos = self._extraer_asientos_contables(libro_data)
             
@@ -467,8 +465,64 @@ class PLEDataAnalyzer:
     # Métodos de enriquecimiento específicos por tabla SUNAT
     async def _enriquecer_cuentas_contables(self, datos: Dict, validaciones: Dict, descripciones: Dict, sugerencias: List):
         """Enriquecer códigos de cuenta contable"""
-        # Implementación para validar cuentas contables con tabla SUNAT
-        pass
+        from .ple_formatter import PLEFormatter
+        
+        formatter = PLEFormatter()
+        
+        # Buscar todas las cuentas contables en los datos
+        cuentas_encontradas = set()
+        
+        # Extraer cuentas de asientos
+        asientos = datos.get('asientos', [])
+        for asiento in asientos:
+            movimientos = asiento.get('movimientos', [])
+            for mov in movimientos:
+                codigo_cuenta = mov.get('cuenta_contable', '')
+                if codigo_cuenta:
+                    cuentas_encontradas.add(codigo_cuenta)
+        
+        # Validar cada cuenta encontrada
+        cuentas_validas = 0
+        cuentas_total = len(cuentas_encontradas)
+        cuentas_advertencias = []
+        
+        for codigo_cuenta in cuentas_encontradas:
+            # Formatear la cuenta para PLE (truncar a 4 dígitos)
+            cuenta_ple = formatter.formatear_cuenta_contable(codigo_cuenta)
+            
+            # Validar cuenta PCGE
+            validacion = formatter.validar_cuenta_pcge(cuenta_ple)
+            
+            if validacion['valida']:
+                cuentas_validas += 1
+            else:
+                cuentas_advertencias.append({
+                    'cuenta_original': codigo_cuenta,
+                    'cuenta_ple': cuenta_ple,
+                    'razon': validacion['razon'],
+                    'sugerencia': validacion.get('sugerencia', '')
+                })
+        
+        # Actualizar validaciones
+        validaciones['cuentas_contables_validas'] = cuentas_validas == cuentas_total
+        validaciones['cuentas_contables_stats'] = {
+            'total': cuentas_total,
+            'validas': cuentas_validas,
+            'invalidas': cuentas_total - cuentas_validas
+        }
+        
+        # Agregar descripciones
+        if cuentas_total > 0:
+            porcentaje_validas = (cuentas_validas / cuentas_total) * 100
+            descripciones['cuentas_contables'] = f"{cuentas_validas}/{cuentas_total} cuentas válidas ({porcentaje_validas:.1f}%)"
+        else:
+            descripciones['cuentas_contables'] = "No se encontraron cuentas contables"
+        
+        # Agregar sugerencias para cuentas problemáticas
+        if cuentas_advertencias:
+            sugerencias.append(f"Se encontraron {len(cuentas_advertencias)} cuentas con advertencias para PLE")
+            for adv in cuentas_advertencias[:3]:  # Mostrar solo las primeras 3
+                sugerencias.append(f"Cuenta {adv['cuenta_original']} → {adv['cuenta_ple']}: {adv['razon']}")
     
     async def _enriquecer_tipos_comprobante(self, datos: Dict, validaciones: Dict, descripciones: Dict, sugerencias: List):
         """Enriquecer tipos de comprobante"""
