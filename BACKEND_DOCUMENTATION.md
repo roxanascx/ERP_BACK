@@ -8,7 +8,29 @@
    │   └── users.py          # 👥 Gestión usuarios
    ├── services/
    │   └── user_service.py   # 🔧 Servicios de usuario
-   └── modules/              # 📦 Módulos de dominio
+   └── modules/              ### � **Accounting + PLE Endpoints**
+```http
+# Gestión Libros Diarios
+GET    /api/v1/libros-diario                    # Lista libros diarios
+POST   /api/v1/libros-diario                    # Crear libro diario
+GET    /api/v1/libros-diario/{id}               # Obtener libro
+PUT    /api/v1/libros-diario/{id}               # Actualizar libro
+DELETE /api/v1/libros-diario/{id}               # Eliminar libro
+
+# PLE (Programa Libros Electrónicos) - UNIFICADO ✅
+POST   /api/v1/accounting/ple/generar           # Generar archivo PLE
+POST   /api/v1/accounting/ple/validar           # Validar datos PLE
+GET    /api/v1/accounting/ple/archivos          # Listar archivos generados
+GET    /api/v1/accounting/ple/preview/{id}      # Vista previa archivo
+DELETE /api/v1/accounting/ple/archivos/{id}     # Eliminar archivo
+GET    /api/v1/accounting/ple/descargar/{id}    # Descargar archivo
+GET    /api/v1/accounting/ple/configuracion     # Configuración módulo
+GET    /api/v1/accounting/ple/estadisticas      # Estadísticas
+GET    /api/v1/accounting/ple/healthcheck       # Health check
+
+# Tablas SUNAT (12 tablas oficiales)
+GET    /api/v1/sunat/tablas                     # Lista todas las tablas
+GET    /api/v1/sunat/tablas/{tabla}             # Obtener tabla específica de dominio
        ├── companies/        # 🏢 Gestión empresas
        ├── accounting/       # 📊 Módulo contable + PLE
        │   ├── ple/         # 📋 Sistema PLE (Libro Diario)

@@ -58,15 +58,15 @@ from app.modules.accounting.schemas import (
 )
 from app.modules.accounting.import_service import PlanContableImportService
 from app.modules.accounting.sunat_routes import router as sunat_router
-from app.modules.accounting.ple_test_routes import router as ple_test_router
+from app.modules.accounting.ple_unified_routes import router as ple_unified_router
 
 router = APIRouter(tags=["Accounting"])
 
 # Incluir rutas de tablas SUNAT
 router.include_router(sunat_router)
 
-# Incluir rutas de prueba PLE
-router.include_router(ple_test_router, prefix="/test")
+# Incluir rutas PLE unificadas (producción)
+router.include_router(ple_unified_router)
 
 
 @router.get("/ping", summary="Health ping del módulo accounting")
