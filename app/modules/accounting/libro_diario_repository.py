@@ -342,3 +342,24 @@ class LibroDiarioRepository:
             
         except Exception as e:
             raise Exception(f"Error al buscar cuentas: {str(e)}")
+    
+    async def buscar_libro_por_descripcion_periodo(
+        self, 
+        empresa_id: str, 
+        descripcion: str, 
+        periodo: str
+    ) -> Optional[Dict[str, Any]]:
+        """Buscar si existe un libro con la misma descripción y período para una empresa"""
+        try:
+            libro = await self.libro_model.collection.find_one({
+                "empresaId": empresa_id,
+                "descripcion": descripcion,
+                "periodo": periodo
+            })
+            
+            if libro:
+                return self.libro_model.from_dict(libro)
+            return None
+            
+        except Exception as e:
+            raise Exception(f"Error al buscar libro por descripción y período: {str(e)}")

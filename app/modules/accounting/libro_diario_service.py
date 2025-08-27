@@ -6,6 +6,7 @@ from datetime import datetime
 import logging
 
 from app.modules.accounting.libro_diario_repository import LibroDiarioRepository
+from app.modules.companies.services import CompanyService
 from app.modules.accounting.schemas import (
     LibroDiarioCreate,
     LibroDiarioUpdate, 
@@ -31,6 +32,7 @@ class LibroDiarioService:
     
     def __init__(self):
         self.repository = LibroDiarioRepository()
+        self.company_service = CompanyService()
     
     # =====================================
     # OPERACIONES DE LIBRO DIARIO V2 (FRONTEND-ALIGNED)
@@ -43,14 +45,24 @@ class LibroDiarioService:
     ) -> LibroDiarioResponseV2:
         """Crear un nuevo libro diario v2 (alineado con frontend)"""
         try:
-            # Obtener información de la empresa
+            # Validar que la empresa existe y obtener su información
             empresa_info = await self._obtener_info_empresa(libro_data.empresaId)
             
-            # Preparar datos del libro
+            # Verificar que no existe ya un libro con la misma descripción y período
+            libro_existente = await self.repository.buscar_libro_por_descripcion_periodo(
+                libro_data.empresaId, 
+                libro_data.descripcion, 
+                libro_data.periodo
+            )
+            
+            if libro_existente:
+                raise ValueError(f"Ya existe un libro con la descripción '{libro_data.descripcion}' para el período {libro_data.periodo}")
+            
+            # Preparar datos del libro con información real de la empresa
             libro_dict = libro_data.dict()
             libro_dict.update({
-                "ruc": empresa_info.get("ruc", ""),
-                "razonSocial": empresa_info.get("razonSocial", ""),
+                "ruc": empresa_info["ruc"],
+                "razonSocial": empresa_info["razonSocial"],
                 "usuarioCreacion": usuario_id,
                 "totalDebe": 0.0,
                 "totalHaber": 0.0,
@@ -60,10 +72,13 @@ class LibroDiarioService:
             # Crear libro
             libro_creado = await self.repository.crear_libro(libro_dict)
             
-            logger.info(f"Libro diario V2 creado: {libro_creado['id']} para empresa {libro_data.empresaId}")
+            logger.info(f"Libro diario V2 creado: {libro_creado['id']} para empresa {empresa_info['ruc']} - {empresa_info['razonSocial']}")
             
             return LibroDiarioResponseV2(**libro_creado)
             
+        except ValueError as ve:
+            logger.error(f"Error de validación al crear libro diario: {str(ve)}")
+            raise
         except Exception as e:
             logger.error(f"Error al crear libro diario: {str(e)}")
             raise
@@ -895,13 +910,36 @@ class LibroDiarioService:
     # =====================================
     
     async def _obtener_info_empresa(self, empresa_id: str) -> Dict[str, Any]:
-        """Obtener información básica de la empresa"""
-        # TODO: Integrar con el módulo de empresas
-        # Por ahora retornamos datos mock
-        return {
-            "ruc": "20123456789",
-            "razonSocial": "Empresa de Prueba S.A.C."
-        }
+        """Obtener información básica de la empresa desde el módulo de companies"""
+        try:
+            # Intentar obtener por ID (ObjectId)
+            empresa = await self.company_service.repository.get_company_by_id(empresa_id)
+            
+            # Si no encuentra por ID, intentar por RUC
+            if not empresa:
+                empresa = await self.company_service.repository.get_company_by_ruc(empresa_id)
+            
+            if not empresa:
+                logger.error(f"Empresa no encontrada: {empresa_id}")
+                raise ValueError(f"Empresa no encontrada: {empresa_id}")
+            
+            if not empresa.activa:
+                logger.error(f"Empresa inactiva: {empresa_id}")
+                raise ValueError(f"Empresa inactiva: {empresa_id}")
+            
+            logger.info(f"Información de empresa obtenida: RUC={empresa.ruc}, Razón Social={empresa.razon_social}")
+            
+            return {
+                "ruc": empresa.ruc,
+                "razonSocial": empresa.razon_social,
+                "direccion": getattr(empresa, 'direccion', ''),
+                "telefono": getattr(empresa, 'telefono', ''),
+                "email": getattr(empresa, 'email', '')
+            }
+            
+        except Exception as e:
+            logger.error(f"Error al obtener información de empresa {empresa_id}: {str(e)}")
+            raise ValueError(f"Error al obtener información de empresa: {str(e)}")
     
     async def _validar_asiento(self, asiento: AsientoContableCreate) -> None:
         """Validar reglas de negocio para asientos"""

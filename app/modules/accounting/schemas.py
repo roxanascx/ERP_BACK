@@ -470,3 +470,313 @@ class PLEReportResult(BaseModel):
     resumen: Dict[str, Any]
     validacion_completa: PLEValidationResult
     error: Optional[str] = None
+
+
+# ================================
+# SCHEMAS SUNAT V3 - CUMPLIMIENTO COMPLETO
+# ================================
+
+class TipoAsientoSunat(str, Enum):
+    """Tipos de asientos según SUNAT"""
+    APERTURA = "A"      # Asiento de apertura
+    OPERACION = "M"     # Asiento por operaciones diversas
+    AJUSTE = "J"        # Asiento de ajuste
+    CIERRE = "C"        # Asiento de cierre
+    DESTINO = "D"       # Asiento de destino
+    TRANSFERENCIA = "T" # Asiento de transferencia
+
+
+class EstadoOperacionSunat(str, Enum):
+    """Estados de operación según SUNAT"""
+    ACTIVO = "1"
+    ANULADO = "8"
+    AJUSTE = "9"
+
+
+class DetalleAsientoSunatV3(BaseModel):
+    """Schema extendido para cumplir estructura SUNAT 24 campos"""
+    # Campos actuales mantenidos para compatibilidad
+    codigoCuenta: str = Field(..., min_length=3, max_length=24)
+    denominacionCuenta: str = Field(..., max_length=100)
+    descripcion: str = Field(..., max_length=200)
+    debe: Optional[float] = Field(default=0.0, ge=0)
+    haber: Optional[float] = Field(default=0.0, ge=0)
+    
+    # NUEVOS CAMPOS SUNAT OBLIGATORIOS
+    codigoUnidadOperacion: Optional[str] = Field(None, max_length=24)
+    codigoCentroCosto: Optional[str] = Field(None, max_length=24)
+    tipoMonedaOrigen: str = Field(default="PEN", max_length=3)
+    tipoDocumentoIdentidad: Optional[str] = Field(None, max_length=2)
+    numeroDocumentoIdentidad: Optional[str] = Field(None, max_length=15)
+    tipoComprobantePago: Optional[str] = Field(None, max_length=2)
+    numeroSerieComprobante: Optional[str] = Field(None, max_length=20)
+    numeroComprobantePago: Optional[str] = Field(None, max_length=20)
+    fechaContable: Optional[str] = Field(None, pattern=r"^\d{2}/\d{2}/\d{4}$")
+    fechaVencimiento: Optional[str] = Field(None, pattern=r"^\d{2}/\d{2}/\d{4}$")
+    fechaOperacion: Optional[str] = Field(None, pattern=r"^\d{2}/\d{2}/\d{4}$")
+    glosaReferencial: Optional[str] = Field(None, max_length=200)
+    debeMonedaOrigen: Optional[float] = Field(default=0.0, ge=0)
+    haberMonedaOrigen: Optional[float] = Field(default=0.0, ge=0)
+    tipoCambio: Optional[float] = Field(default=1.0, gt=0)
+    
+    @validator('codigoCuenta')
+    def validate_codigo_cuenta_sunat(cls, v):
+        """Validar código de cuenta según PCGR"""
+        import re
+        # Validar formato: solo números y punto como separador opcional
+        if not re.match(r'^[0-9]+(\.[0-9]+)*$', v):
+            raise ValueError(f'Código cuenta {v} no cumple formato PCGR (solo números y puntos)')
+        return v
+
+    @validator('debe', 'haber')
+    def validate_debe_haber_exclusivo(cls, v, values):
+        """Validar que debe y haber sean mutuamente exclusivos"""
+        # Al menos uno debe tener valor mayor a cero
+        if 'debe' in values and 'haber' in values:
+            debe_val = values.get('debe', 0) or 0
+            haber_val = values.get('haber', 0) or 0
+            
+            if debe_val == 0 and haber_val == 0:
+                raise ValueError('Debe especificar un valor en Debe o Haber')
+            if debe_val > 0 and haber_val > 0:
+                raise ValueError('No puede tener valores en Debe y Haber al mismo tiempo')
+        return v
+
+
+class AsientoContableSunatV3(BaseModel):
+    """Schema completo SUNAT para asientos contables"""
+    # Campos actuales mantenidos para compatibilidad
+    numero: str = Field(..., pattern=r"^[0-9]{1,10}$")
+    fecha: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    descripcion: str = Field(..., max_length=200)
+    detalles: List[DetalleAsientoSunatV3] = Field(..., min_items=2)
+    
+    # NUEVOS CAMPOS SUNAT OBLIGATORIOS
+    tipoAsiento: TipoAsientoSunat = Field(default=TipoAsientoSunat.OPERACION)
+    codigoLibroOrigen: Optional[str] = Field(None, pattern=r"^[0-9]{2}$")
+    numeroCorrelativoOrigen: Optional[str] = Field(None, max_length=10)
+    numeroDocumentoSustentatorio: Optional[str] = Field(None, max_length=20)
+    estadoOperacion: EstadoOperacionSunat = Field(default=EstadoOperacionSunat.ACTIVO)
+    
+    @validator('detalles')
+    def validate_detalles_sunat(cls, v):
+        """Validación extendida para SUNAT"""
+        # 1. Validar balance
+        total_debe = sum(detalle.debe or 0 for detalle in v)
+        total_haber = sum(detalle.haber or 0 for detalle in v)
+        
+        if abs(total_debe - total_haber) > 0.01:
+            raise ValueError(f'Asiento desbalanceado. Debe: {total_debe}, Haber: {total_haber}')
+        
+        # 2. Validar que al menos una cuenta sea de nivel hoja (con punto)
+        cuentas_hoja = [d for d in v if '.' in d.codigoCuenta]
+        if len(cuentas_hoja) == 0:
+            raise ValueError('Al menos una cuenta debe ser de nivel hoja (subcuenta con punto)')
+        
+        # 3. Validar códigos únicos en el asiento
+        codigos_cuenta = [d.codigoCuenta for d in v]
+        if len(codigos_cuenta) != len(set(codigos_cuenta)):
+            raise ValueError('No se permiten códigos de cuenta duplicados en el mismo asiento')
+        
+        return v
+
+
+class LibroDiarioSunatV3(BaseModel):
+    """Schema completo SUNAT para libro diario"""
+    # Campos actuales mantenidos para compatibilidad
+    descripcion: str = Field(..., max_length=200)
+    periodo: str = Field(..., pattern=r"^\d{4}(-\d{2})?$")
+    estado: EstadoLibroDiario = EstadoLibroDiario.BORRADOR
+    moneda: str = Field(default="PEN")
+    tipoLibro: str = Field(default="5.1")
+    empresaId: str
+    
+    # NUEVOS CAMPOS SUNAT
+    fechaInicioOperaciones: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    ingresosBrutosAnteriores: Optional[float] = Field(None, ge=0)
+    minDigitosCuenta: int = Field(default=3, ge=3, le=24)
+    formatoPLE: str = Field(default="5.1")
+    requiereValidacionSunat: bool = Field(default=True)
+    
+    @validator('minDigitosCuenta')
+    def validate_min_digitos_por_ingresos(cls, v, values):
+        """Validar mínimo dígitos según ingresos UIT anteriores"""
+        ingresos = values.get('ingresosBrutosAnteriores', 0)
+        uit_2024 = 4950.0  # UIT 2024
+        
+        if ingresos and ingresos >= (100 * uit_2024):
+            if v < 4:
+                raise ValueError('Empresas con ingresos ≥100 UIT requieren mínimo 4 dígitos en códigos de cuenta')
+        
+        return v
+
+
+# Schemas para respuesta con datos SUNAT
+class AsientoContableSunatResponseV3(AsientoContableSunatV3):
+    """Schema para respuesta de asientos SUNAT V3"""
+    id: str
+    empresaId: str
+    libroId: str
+    usuarioCreacion: Optional[str] = None
+    fechaCreacion: Optional[datetime] = None
+    fechaModificacion: Optional[datetime] = None
+    
+    # Campos calculados para SUNAT
+    numeroCorrelativoFormateado: Optional[str] = None  # M000000001 formato
+    codigoUnicoOperacion: Optional[str] = None         # Para campo 2 PLE
+    validacionSunat: Optional[Dict[str, Any]] = None   # Resultado validación
+    
+    class Config:
+        from_attributes = True
+
+
+class LibroDiarioSunatResponseV3(LibroDiarioSunatV3):
+    """Schema para respuesta de libro diario SUNAT V3"""
+    id: str
+    ruc: str
+    razonSocial: str
+    asientos: List[AsientoContableSunatResponseV3] = []
+    totalDebe: float = 0.0
+    totalHaber: float = 0.0
+    fechaCreacion: Optional[datetime] = None
+    fechaModificacion: Optional[datetime] = None
+    usuarioCreacion: Optional[str] = None
+    usuarioModificacion: Optional[str] = None
+    
+    # Campos específicos SUNAT
+    configuracionSunat: Optional[Dict[str, Any]] = None
+    estadoValidacionSunat: Optional[str] = None  # "conforme", "observado", "no_validado"
+    ultimaValidacionSunat: Optional[datetime] = None
+    nombreArchivoPLE: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+
+# ================================
+# SCHEMAS PLE SUNAT V3 - FASE 3
+# ================================
+
+class PLEGenerarZipV3Request(BaseModel):
+    """Request para generar archivo PLE en formato ZIP SUNAT V3"""
+    libro_diario_id: str = Field(..., description="ID del libro diario")
+    validar_antes_generar: bool = Field(True, description="Validar datos antes de generar")
+    incluir_metadatos: bool = Field(True, description="Incluir metadatos en la respuesta")
+    directorio_salida: Optional[str] = Field(None, description="Directorio de salida (opcional)")
+
+
+class PLEPreviewV3Request(BaseModel):
+    """Request para generar preview del archivo PLE SUNAT V3"""
+    libro_diario_id: str = Field(..., description="ID del libro diario")
+    cantidad_lineas: int = Field(10, description="Cantidad de líneas para preview", ge=1, le=100)
+
+
+class PLEZipMetadataResponse(BaseModel):
+    """Metadatos del archivo ZIP generado"""
+    nombre_archivo_zip: str
+    nombre_archivo_txt_interno: str
+    tamaño_txt_bytes: int
+    tamaño_zip_bytes: int
+    ratio_compresion: float
+    hash_md5_txt: str
+    hash_md5_zip: str
+    fecha_creacion: datetime
+    metodo_compresion: str
+    nivel_compresion: int
+    es_valido: bool
+    errores: List[str]
+
+
+class PLEArchivoResponse(BaseModel):
+    """Información del archivo PLE generado"""
+    nombre_archivo: str
+    tamaño_txt: int
+    tamaño_zip: Optional[int]
+    total_lineas: int
+    fecha_generacion: datetime
+    errores: List[str]
+    resumen_validacion: Dict[str, Any]
+    metadatos: Dict[str, Any]
+
+
+class PLEGenerarZipV3Response(BaseModel):
+    """Response completa para generación de archivo PLE ZIP V3"""
+    success: bool
+    archivo_ple: PLEArchivoResponse
+    metadata_zip: PLEZipMetadataResponse
+    mensaje: str
+
+
+class PLEPreviewResponse(BaseModel):
+    """Response para preview de archivo PLE"""
+    success: bool
+    preview: Dict[str, Any]
+    informacion: Dict[str, Any]
+
+
+class PLEValidacionResult(BaseModel):
+    """Resultado de validación de datos para PLE"""
+    es_valido: bool
+    errores: List[str]
+    advertencias: List[str]
+    estadisticas: Dict[str, Any]
+
+
+class PLEValidacionResponse(BaseModel):
+    """Response para validación de datos PLE"""
+    success: bool
+    validacion: PLEValidacionResult
+
+
+class PLEEstadisticas(BaseModel):
+    """Estadísticas generales de archivos PLE"""
+    total_archivos: int = 0
+    total_lineas: int = 0
+    total_debe: float = 0.0
+    total_haber: float = 0.0
+    ultimo_periodo: Optional[str] = None
+    archivos_ultimo_mes: int = 0
+    tamaño_total_mb: float = 0.0
+
+
+class PLEArchivoModel(BaseModel):
+    """Modelo para archivos PLE almacenados"""
+    id: Optional[str] = Field(None, alias="_id")
+    empresa_id: str
+    nombre_archivo: str
+    tipo_archivo: str = "PLE_LIBRO_DIARIO"
+    periodo: str  # YYYYMM
+    ruc_empresa: str
+    
+    # Metadatos del archivo
+    tamaño_txt_bytes: int
+    tamaño_zip_bytes: int
+    total_lineas: int
+    total_debe: float
+    total_haber: float
+    
+    # Metadatos de generación
+    fecha_generacion: datetime
+    metadatos_zip: Dict[str, Any]
+    opciones_generacion: Dict[str, Any]
+    
+    # Estado y validación
+    estado: str = "generado"  # generado, error, eliminado
+    validacion_sunat: Dict[str, Any] = {}
+    errores: List[str] = []
+    
+    # Archivos en disco
+    ruta_archivo_txt: Optional[str] = None
+    ruta_archivo_zip: Optional[str] = None
+    hash_md5_zip: str
+    
+    class Config:
+        populate_by_name = True
+
+
+class PLEDashboardResponse(BaseModel):
+    """Response del dashboard PLE"""
+    archivos_recientes: List[PLEArchivoModel]
+    estadisticas: PLEEstadisticas
+    configuracion_sunat: Dict[str, Any]
+    ultima_actualizacion: datetime
