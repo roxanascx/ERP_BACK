@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional, Dict, Any
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from ....core.dependencies import get_database
+from ....core.database_deps import get_database
 from ..services.rvie_comprobante_bd_service import RvieComprobanteBDService
 from ..models.rvie_comprobante_bd import RvieComprobanteBDResponse, RvieEstadisticas
 from ....shared.exceptions import SireException, SireValidationException

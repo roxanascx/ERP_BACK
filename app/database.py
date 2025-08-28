@@ -50,3 +50,8 @@ async def get_database_async():
 async def get_database_connection():
     """Obtener conexión a la base de datos para dependencias"""
     return await get_database_async()
+
+# Función get_db para compatibilidad con FastAPI Depends
+async def get_db():
+    """Función de dependencia estándar para obtener la base de datos"""
+    return await get_database_async()

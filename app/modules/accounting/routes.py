@@ -60,6 +60,11 @@ from app.modules.accounting.import_service import PlanContableImportService
 from app.modules.accounting.sunat_routes import router as sunat_router
 from app.modules.accounting.ple_unified_routes import router as ple_unified_router
 
+# Importar los routers específicos de cada registro
+from app.modules.accounting.routes.mayor_routes import router as mayor_router
+from app.modules.accounting.routes.filtrado_avanzado_routes import router_filtrado
+from app.modules.accounting.routes.diario_routes import router as diario_router
+
 router = APIRouter(tags=["Accounting"])
 
 # Incluir rutas de tablas SUNAT
@@ -67,6 +72,11 @@ router.include_router(sunat_router)
 
 # Incluir rutas PLE unificadas (producción)
 router.include_router(ple_unified_router)
+
+# Incluir rutas específicas de cada registro PLE
+router.include_router(mayor_router)      # Libro Mayor PLE 050200
+router.include_router(router_filtrado)  # Filtrado Avanzado
+router.include_router(diario_router)    # Libro Diario PLE 050100
 
 
 @router.get("/ping", summary="Health ping del módulo accounting")

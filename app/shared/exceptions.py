@@ -100,3 +100,25 @@ class SireRateLimitException(SireException):
     """Cuando se excede el límite de consultas SIRE"""
     def __init__(self, detail: str = "Límite de consultas SIRE excedido"):
         super().__init__(detail, status.HTTP_429_TOO_MANY_REQUESTS)
+
+
+# Excepciones generales de validación y lógica de negocio
+class ValidationException(ERPException):
+    """Excepción general de validación"""
+    def __init__(self, detail: str):
+        super().__init__(detail, status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+
+class BusinessLogicException(ERPException):
+    """Excepción de lógica de negocio"""
+    def __init__(self, detail: str):
+        super().__init__(detail, status.HTTP_400_BAD_REQUEST)
+
+
+class NotFoundException(ERPException):
+    """Excepción cuando un recurso no es encontrado"""
+    def __init__(self, resource: str, identifier: str = ""):
+        detail = f"{resource} no encontrado"
+        if identifier:
+            detail += f": {identifier}"
+        super().__init__(detail, status.HTTP_404_NOT_FOUND)

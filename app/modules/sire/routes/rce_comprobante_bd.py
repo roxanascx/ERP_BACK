@@ -13,7 +13,7 @@ from ..models.rce_comprobante_bd import (
     RceGuardarResponse,
     RceEstadisticasBD
 )
-from ....core.dependencies import get_database
+from ....core.database_deps import get_database
 from ....shared.exceptions import SireException
 
 router = APIRouter(prefix="/bd", tags=["RCE Base de Datos"])

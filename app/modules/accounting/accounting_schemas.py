@@ -160,7 +160,7 @@ class AsientoContableResponseV2(AsientoContableBaseV2):
 class LibroDiarioBaseV2(BaseModel):
     """Schema base para libro diario v2"""
     descripcion: str = Field(..., max_length=200)
-    periodo: str = Field(..., pattern=r"^\d{4}(-\d{2})?$")  # YYYY o YYYY-MM
+    periodo: str = Field(..., pattern=r"^\d{6}$")  # YYYYMM formato SUNAT
     estado: EstadoLibroDiario = EstadoLibroDiario.BORRADOR
     moneda: str = Field(default="PEN")
     tipoLibro: str = Field(default="5.1")
@@ -256,7 +256,7 @@ class AsientoContableResponse(AsientoContableBase):
 class LibroDiarioBase(BaseModel):
     """Schema base para libro diario"""
     descripcion: str = Field(..., max_length=200)
-    periodo: str = Field(..., pattern=r"^\d{4}(-\d{2})?$")  # YYYY o YYYY-MM
+    periodo: str = Field(..., pattern=r"^\d{6}$")  # YYYYMM formato SUNAT
     estado: EstadoLibroDiario = EstadoLibroDiario.BORRADOR
     moneda: str = Field(default="PEN")
     tipoLibro: str = Field(default="5.1")

@@ -291,7 +291,8 @@ class LibroDiarioRepository:
                 "fecha": {"$regex": f"^{periodo}"}
             }
             
-            ultimo_asiento = self.asiento_model.collection.find_one(
+            # Corrección: usar await con find_one
+            ultimo_asiento = await self.asiento_model.collection.find_one(
                 filtro,
                 sort=[("numeroCorrelativo", -1)]
             )
