@@ -18,11 +18,18 @@ Fecha: Agosto 2025
 
 import asyncio
 import logging
+from urllib.parse import urlsplit
+
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.errors import DuplicateKeyError
 from datetime import datetime
 import sys
 import os
+
+from dotenv import load_dotenv
+
+# Cargar variables de entorno (MONGODB_URL / DATABASE_NAME)
+load_dotenv()
 
 # Configurar logging
 logging.basicConfig(
@@ -273,7 +280,7 @@ def main():
     
     # Configuración
     MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
-    DB_NAME = os.getenv("DB_NAME", "erp_db")
+    DB_NAME = os.getenv("DATABASE_NAME") or os.getenv("DB_NAME") or urlsplit(MONGODB_URL).path.lstrip("/") or "erp_db"
     
     print(f"📡 MongoDB URL: {MONGODB_URL}")
     print(f"🗄️  Base de datos: {DB_NAME}")

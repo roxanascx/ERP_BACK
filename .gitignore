@@ -144,3 +144,6 @@ cython_debug/
 # Database
 *.db
 *.sqlite
+
+# Backup local del .env previo a la migracion a Atlas
+.env.local.backup

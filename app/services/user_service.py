@@ -3,13 +3,13 @@ from datetime import datetime
 from ..models.user import UserModel, UserCreate, UserUpdate, UserResponse
 from bson import ObjectId
 import motor.motor_asyncio
-import os
+
+from ..config import settings
 
 class UserService:
     def __init__(self):
-        mongodb_url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
-        self.client = motor.motor_asyncio.AsyncIOMotorClient(mongodb_url)
-        self.db = self.client.erp_database
+        self.client = motor.motor_asyncio.AsyncIOMotorClient(settings.MONGODB_URL)
+        self.db = self.client[settings.DATABASE_NAME]
         self.collection = self.db.users
 
     async def create_user(self, user_data: UserCreate) -> UserResponse:

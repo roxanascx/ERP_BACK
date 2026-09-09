@@ -1,12 +1,14 @@
 from motor.motor_asyncio import AsyncIOMotorClient
-import os
 from dotenv import load_dotenv
+
+from .config import settings
 
 # Cargar variables de entorno
 load_dotenv()
 
-# URL de MongoDB
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017/erp_db")
+# URL de MongoDB y nombre de la base de datos (local o MongoDB Atlas)
+MONGODB_URL = settings.MONGODB_URL
+DATABASE_NAME = settings.DATABASE_NAME
 
 # Cliente de MongoDB
 client = None
@@ -16,8 +18,8 @@ async def connect_to_mongo():
     """Conectar a MongoDB"""
     global client, database
     client = AsyncIOMotorClient(MONGODB_URL)
-    database = client.erp_db
-    print("✅ Conectado a MongoDB")
+    database = client[DATABASE_NAME]
+    print(f"✅ Conectado a MongoDB (base de datos: {DATABASE_NAME})")
 
 async def close_mongo_connection():
     """Cerrar conexión a MongoDB"""
@@ -33,7 +35,7 @@ def get_database():
     # Si no está inicializada, crear conexión síncrona
     if database is None:
         client = AsyncIOMotorClient(MONGODB_URL)
-        database = client.erp_db
+        database = client[DATABASE_NAME]
     
     return database
 

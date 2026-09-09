@@ -15,6 +15,7 @@ import pymongo
 from motor.motor_asyncio import AsyncIOMotorClient
 import asyncio
 import os
+from urllib.parse import urlsplit
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,8 +23,9 @@ load_dotenv()
 async def create_indexes_async():
     """Crear índices para optimizar consultas en plan_contable (versión async)"""
     MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017/erp_db")
+    DB_NAME = os.getenv("DATABASE_NAME") or urlsplit(MONGODB_URL).path.lstrip("/") or "erp_db"
     client = AsyncIOMotorClient(MONGODB_URL)
-    db = client.erp_db
+    db = client[DB_NAME]
     collection = db["plan_contable"]
     
     print("Creando índices para plan_contable...")

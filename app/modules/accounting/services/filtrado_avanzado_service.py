@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.errors import PyMongoError
 
+from app.config import settings
 from ..schemas.schemas_mayor import LibroMayorResponse, TipoCuentaContable
 from .data_adapter import DataAdapterMayor
 from app.shared.exceptions import AccountingException
@@ -131,10 +132,10 @@ class ResultadoFiltrado:
 class ServiceFiltradoAvanzadoMayor:
     """Servicio de filtrado avanzado para Libro Mayor"""
     
-    def __init__(self, mongodb_client: MongoClient, db_name: str = "erp_db"):
+    def __init__(self, mongodb_client: MongoClient, db_name: Optional[str] = None):
         """Inicializar servicio"""
         self.client = mongodb_client
-        self.db = self.client[db_name]
+        self.db = self.client[db_name or settings.DATABASE_NAME]
         self.collection_asientos = self.db.asientos_contables
         self.collection_empresas = self.db.companies
         self.adapter = DataAdapterMayor()  # No requiere parámetros
