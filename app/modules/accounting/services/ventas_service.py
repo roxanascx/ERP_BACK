@@ -21,6 +21,7 @@ Fecha: Agosto 2025
 """
 
 import logging
+import io
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP
@@ -558,11 +559,148 @@ class VentasService:
         return registros
     
     async def _obtener_documento_empresa(self, empresa_id: str) -> Dict[str, Any]:
-        """Obtener documento de empresa desde la base de datos"""
-        empresa = await self.db.empresas.find_one({"_id": ObjectId(empresa_id)})
+        """Obtener documento de empresa desde la base de datos (empresa_id = RUC)"""
+        empresa = await self.db.companies.find_one({"ruc": empresa_id})
         if not empresa:
             raise NotFoundException(f"Empresa {empresa_id} no encontrada")
         return empresa
+
+    # ================================
+    # RESUMEN / ESTADÍSTICAS
+    # ================================
+
+    async def obtener_resumen_periodo(
+        self,
+        empresa_id: str,
+        periodo_aaaamm: str
+    ) -> Dict[str, Any]:
+        """
+        Obtener resumen estadístico de ventas para un período (AAAAMM)
+
+        Args:
+            empresa_id: ID de la empresa
+            periodo_aaaamm: Período AAAAMM
+
+        Returns:
+            Dict con totales, desglose por comprobante y top clientes
+        """
+        try:
+            filtro = {
+                "empresa_id": empresa_id,
+                "periodo": periodo_aaaamm,
+                "estado_operacion": {"$ne": EstadoOperacionVenta.ANULADO.value}
+            }
+
+            pipeline_totales = [
+                {"$match": filtro},
+                {
+                    "$group": {
+                        "_id": None,
+                        "total_registros": {"$sum": 1},
+                        "total_monto": {"$sum": {"$toDouble": "$importe_total"}},
+                        "total_igv": {"$sum": {"$toDouble": "$igv_ipm"}},
+                        "clientes_unicos": {"$addToSet": "$numero_documento_cliente"}
+                    }
+                }
+            ]
+
+            pipeline_por_tipo = [
+                {"$match": filtro},
+                {"$group": {"_id": "$tipo_comprobante", "total": {"$sum": 1}}}
+            ]
+
+            pipeline_top_clientes = [
+                {"$match": filtro},
+                {
+                    "$group": {
+                        "_id": "$numero_documento_cliente",
+                        "nombres": {"$last": "$razon_social_cliente"},
+                        "monto_total": {"$sum": {"$toDouble": "$importe_total"}},
+                        "cantidad_ventas": {"$sum": 1}
+                    }
+                },
+                {"$sort": {"monto_total": -1}},
+                {"$limit": 5}
+            ]
+
+            resultado_totales = await self.collection.aggregate(pipeline_totales).to_list(length=1)
+            resultado_por_tipo = await self.collection.aggregate(pipeline_por_tipo).to_list(length=None)
+            resultado_top_clientes = await self.collection.aggregate(pipeline_top_clientes).to_list(length=None)
+
+            totales = resultado_totales[0] if resultado_totales else {
+                "total_registros": 0, "total_monto": 0.0, "total_igv": 0.0, "clientes_unicos": []
+            }
+            total_registros = totales["total_registros"]
+            total_monto = totales["total_monto"]
+
+            return {
+                "periodo": periodo_aaaamm,
+                "empresa_id": empresa_id,
+                "total_registros": total_registros,
+                "total_monto": total_monto,
+                "total_igv": totales["total_igv"],
+                "promedio_venta": (total_monto / total_registros) if total_registros else 0.0,
+                "clientes_unicos": len(totales["clientes_unicos"]),
+                "comprobantes_por_tipo": {r["_id"]: r["total"] for r in resultado_por_tipo},
+                "montos_por_mes": [
+                    {"mes": periodo_aaaamm, "monto": total_monto, "cantidad": total_registros}
+                ] if total_registros else [],
+                "top_clientes": [
+                    {
+                        "documento": r["_id"],
+                        "nombres": r.get("nombres", ""),
+                        "monto_total": r["monto_total"],
+                        "cantidad_ventas": r["cantidad_ventas"]
+                    }
+                    for r in resultado_top_clientes
+                ]
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error obteniendo resumen del período {periodo_aaaamm}: {str(e)}")
+            raise BusinessLogicException(f"Error interno obteniendo resumen: {str(e)}")
+
+    # ================================
+    # EXPORTACIÓN A EXCEL
+    # ================================
+
+    async def exportar_excel(
+        self,
+        empresa_id: str,
+        periodo_inicio: Optional[str] = None,
+        periodo_fin: Optional[str] = None,
+        incluir_anulados: bool = False
+    ) -> bytes:
+        """Exportar registros de ventas filtrados a un archivo .xlsx"""
+        from openpyxl import Workbook
+
+        resultado = await self.listar_registros_ventas(
+            empresa_id=empresa_id,
+            periodo_inicio=periodo_inicio,
+            periodo_fin=periodo_fin,
+            incluir_anulados=incluir_anulados,
+            limite=10000
+        )
+        registros = resultado["registros"]
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Registro de Ventas"
+
+        columnas = [
+            "fecha_emision", "tipo_comprobante", "serie_comprobante", "numero_comprobante",
+            "tipo_documento_cliente", "numero_documento_cliente", "razon_social_cliente",
+            "base_imponible_gravada", "igv_ipm", "importe_total", "estado_operacion"
+        ]
+        ws.append(columnas)
+
+        for registro in registros:
+            fila = registro.dict()
+            ws.append([str(fila.get(col, "")) for col in columnas])
+
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        return buffer.getvalue()
     
     def _convertir_a_response(self, documento: Dict[str, Any]) -> RegistroVentaResponse:
         """Convertir documento MongoDB a modelo de respuesta"""

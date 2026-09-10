@@ -207,3 +207,6 @@ class CategoriaCreate(BaseModel):
     """Esquema para crear categoría"""
     nombre: str = Field(..., min_length=2, max_length=50)
     descripcion: Optional[str] = Field(None, max_length=200)
+
+# Resolver referencia adelantada a DatosSunatResponse, definida después de ConsultaRucResponse
+ConsultaRucResponse.model_rebuild()

@@ -21,6 +21,7 @@ Fecha: Agosto 2025
 """
 
 import logging
+import uuid
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime, date
 from decimal import Decimal
@@ -158,9 +159,6 @@ class MayorService:
                     saldo_final_acreedor = abs(saldo_neto_final)
                 
                 # Crear registro del Libro Mayor
-                from datetime import datetime
-                import uuid
-                
                 registro_mayor = LibroMayorResponse(
                     # Campos requeridos del schema
                     id=str(uuid.uuid4()),  # ID único
@@ -183,15 +181,11 @@ class MayorService:
                     saldo_final_acreedor=saldo_final_acreedor,
                     
                     # Campos adicionales
-                    estado_cuenta=EstadoCuentaMayor.ACTIVA,
-                    nivel_cuenta=len(codigo_cuenta),
-                    periodo_reporte=periodo_hasta
+                    estado_cuenta=EstadoCuentaMayor.ACTIVA
                 )
-                
+
                 libro_mayor.append(registro_mayor)
-                
-                libro_mayor.append(registro_mayor)
-            
+
             # Incluir cuentas sin movimiento si se solicita
             if incluir_cuentas_sin_movimiento:
                 cuentas_sin_movimiento = await self._obtener_cuentas_sin_movimiento(
@@ -422,35 +416,45 @@ class MayorService:
     ) -> List[LibroMayorResponse]:
         """Obtener cuentas del plan contable sin movimientos en el período"""
         cuentas_sin_movimiento = []
-        
+
+        # Filtrar candidatas primero (en memoria) y pedir sus saldos iniciales
+        # en UNA sola consulta batch. Antes se hacía una consulta a Mongo por
+        # cada cuenta candidata (hasta ~3000), lo que en MongoDB Atlas (latencia
+        # de red por consulta) hacía que este endpoint tardara varios minutos.
+        candidatas = []
         for cuenta_plan in plan_contable:
             codigo_cuenta = cuenta_plan.get("codigo")
-            
-            # Filtrar por rango si se especifica
+
             if codigo_cuenta_desde and codigo_cuenta < codigo_cuenta_desde:
                 continue
             if codigo_cuenta_hasta and codigo_cuenta > codigo_cuenta_hasta:
                 continue
-            
-            # Saltar si ya tiene movimientos
             if codigo_cuenta in cuentas_con_movimiento:
                 continue
-            
-            # Obtener saldo inicial
-            saldos_iniciales = await self._calcular_saldos_iniciales(
-                empresa_id=empresa_id,
-                periodo_inicio=periodo_hasta,
-                cuentas=[codigo_cuenta]
-            )
-            
+
+            candidatas.append(cuenta_plan)
+
+        saldos_iniciales = await self._calcular_saldos_iniciales(
+            empresa_id=empresa_id,
+            periodo_inicio=periodo_hasta,
+            cuentas=[c.get("codigo") for c in candidatas]
+        )
+
+        for cuenta_plan in candidatas:
+            codigo_cuenta = cuenta_plan.get("codigo")
+
             saldo_inicial = saldos_iniciales.get(codigo_cuenta, {
-                "saldo_deudor": Decimal('0.00'), 
+                "saldo_deudor": Decimal('0.00'),
                 "saldo_acreedor": Decimal('0.00')
             })
-            
+
             # Solo incluir si tiene saldo inicial
             if saldo_inicial["saldo_deudor"] > 0 or saldo_inicial["saldo_acreedor"] > 0:
                 registro_mayor = LibroMayorResponse(
+                    id=str(uuid.uuid4()),
+                    empresa_id=empresa_id,
+                    periodo=periodo_hasta,
+                    fecha_creacion=datetime.now().isoformat(),
                     codigo_cuenta_contable=codigo_cuenta,
                     descripcion_cuenta=cuenta_plan.get("descripcion", ""),
                     tipo_cuenta=self._determinar_tipo_cuenta(codigo_cuenta),
@@ -461,11 +465,9 @@ class MayorService:
                     movimiento_haber=Decimal('0.00'),
                     saldo_final_deudor=saldo_inicial["saldo_deudor"],
                     saldo_final_acreedor=saldo_inicial["saldo_acreedor"],
-                    estado_cuenta=EstadoCuentaMayor.ACTIVA,
-                    nivel_cuenta=len(codigo_cuenta),
-                    periodo_reporte=periodo_hasta
+                    estado_cuenta=EstadoCuentaMayor.ACTIVA
                 )
-                
+
                 cuentas_sin_movimiento.append(registro_mayor)
         
         return cuentas_sin_movimiento

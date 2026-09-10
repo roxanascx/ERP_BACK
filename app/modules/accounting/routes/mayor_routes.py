@@ -20,10 +20,11 @@ Fecha: Agosto 2025
 import logging
 from typing import Dict, List, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Path
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from datetime import datetime
 import tempfile
 import os
+import io
 
 from ....database import get_database
 from ..services.mayor_service import MayorService
@@ -40,6 +41,75 @@ logger = logging.getLogger(__name__)
 
 # Crear router para Libro Mayor
 router = APIRouter(prefix="/libro-mayor", tags=["Libro Mayor"])
+
+
+@router.get(
+    "/export-excel",
+    summary="Exportar Libro Mayor a Excel"
+)
+async def exportar_excel(
+    empresa_id: str = Query(..., description="ID de la empresa"),
+    periodo_desde: str = Query(..., description="Período inicial AAAAMM", regex=r"^\d{6}$"),
+    periodo_hasta: str = Query(..., description="Período final AAAAMM", regex=r"^\d{6}$"),
+    cuenta_codigo: Optional[str] = Query(None, description="Código de cuenta (opcional, filtra a una sola cuenta)"),
+    db=Depends(get_database)
+) -> StreamingResponse:
+    """Descargar el Libro Mayor (o el detalle de una cuenta) en formato .xlsx"""
+    try:
+        from openpyxl import Workbook
+
+        service = MayorService(db)
+        wb = Workbook()
+
+        if cuenta_codigo:
+            from ..repositories.mayor_repository import MayorRepository
+            repository = MayorRepository(db)
+            resumen = await repository.obtener_resumen_movimientos_por_cuenta(
+                empresa_id=empresa_id,
+                periodo_desde=periodo_desde,
+                periodo_hasta=periodo_hasta,
+                codigo_cuenta=cuenta_codigo
+            )
+            ws = wb.active
+            ws.title = f"Cuenta {cuenta_codigo}"[:31]
+            ws.append(["Fecha", "N° Asiento", "Documento", "Glosa", "Debe", "Haber", "Saldo Acumulado"])
+            for m in resumen["movimientos_detalle"]:
+                ws.append([
+                    str(m.get("fecha", "")), m.get("numero_asiento", ""), m.get("documento", ""),
+                    m.get("descripcion", ""), m.get("debe", 0), m.get("haber", 0), m.get("saldo_acumulado", 0)
+                ])
+        else:
+            libro_mayor = await service.obtener_libro_mayor(
+                empresa_id=empresa_id,
+                periodo_desde=periodo_desde,
+                periodo_hasta=periodo_hasta
+            )
+            ws = wb.active
+            ws.title = "Libro Mayor"
+            ws.append([
+                "Código Cuenta", "Descripción", "Saldo Deudor Inicial", "Saldo Acreedor Inicial",
+                "Movimiento Debe", "Movimiento Haber", "Saldo Deudor Final", "Saldo Acreedor Final"
+            ])
+            for cuenta in libro_mayor:
+                ws.append([
+                    cuenta.codigo_cuenta_contable, cuenta.descripcion_cuenta,
+                    float(cuenta.saldo_deudor_inicial), float(cuenta.saldo_acreedor_inicial),
+                    float(cuenta.movimiento_debe), float(cuenta.movimiento_haber),
+                    float(cuenta.saldo_final_deudor), float(cuenta.saldo_final_acreedor)
+                ])
+
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+
+        return StreamingResponse(
+            buffer,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=libro_mayor.xlsx"}
+        )
+    except Exception as e:
+        logger.error(f"Error exportando Libro Mayor a Excel: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error exportando a Excel: {str(e)}")
 
 
 @router.get(
@@ -217,69 +287,87 @@ async def obtener_resumen_periodo(
 @router.get(
     "/cuenta/{codigo_cuenta}",
     summary="Obtener detalle de cuenta específica",
-    description="Obtiene el detalle completo de movimientos de una cuenta específica."
+    description="Obtiene el detalle completo de movimientos de una cuenta específica en un rango de períodos."
 )
 async def obtener_detalle_cuenta(
     codigo_cuenta: str = Path(..., description="Código de la cuenta contable"),
     empresa_id: str = Query(..., description="ID de la empresa"),
-    periodo_aaaamm: str = Query(..., description="Período AAAAMM", regex=r"^\d{6}$"),
+    periodo_desde: str = Query(..., description="Período inicial AAAAMM", regex=r"^\d{6}$"),
+    periodo_hasta: str = Query(..., description="Período final AAAAMM", regex=r"^\d{6}$"),
     db=Depends(get_database)
 ):
     """
     Obtener detalle de una cuenta específica
-    
+
     Muestra todos los movimientos, saldos y estadísticas
-    de una cuenta contable específica en un período.
-    
+    de una cuenta contable específica en un rango de períodos.
+
     **Parámetros:**
     - **codigo_cuenta**: Código de la cuenta contable
     - **empresa_id**: Identificador único de la empresa
-    - **periodo_aaaamm**: Período en formato AAAAMM
-    
+    - **periodo_desde** / **periodo_hasta**: Rango de períodos en formato AAAAMM
+
     **Respuesta:**
-    Detalle completo de la cuenta con todos sus movimientos.
+    Detalle completo de la cuenta con todos sus movimientos. Si la cuenta no
+    tiene movimientos ni saldo en el rango, se devuelve una estructura vacía
+    (no un 404) siempre que la cuenta exista en el plan contable.
     """
     try:
         service = MayorService(db)
-        
-        # Obtener Libro Mayor filtrado por la cuenta específica
+
+        from ..repositories.mayor_repository import MayorRepository
+        repository = MayorRepository(db)
+
+        resumen_movimientos = await repository.obtener_resumen_movimientos_por_cuenta(
+            empresa_id=empresa_id,
+            periodo_desde=periodo_desde,
+            periodo_hasta=periodo_hasta,
+            codigo_cuenta=codigo_cuenta
+        )
+
+        # Obtener Libro Mayor filtrado por la cuenta específica (saldos + clasificación)
         libro_mayor = await service.obtener_libro_mayor(
             empresa_id=empresa_id,
-            periodo_desde=periodo_aaaamm,
-            periodo_hasta=periodo_aaaamm,
+            periodo_desde=periodo_desde,
+            periodo_hasta=periodo_hasta,
             codigo_cuenta_desde=codigo_cuenta,
             codigo_cuenta_hasta=codigo_cuenta,
             incluir_cuentas_sin_movimiento=True
         )
-        
-        if not libro_mayor:
-            raise HTTPException(
-                status_code=404, 
-                detail=f"No se encontró la cuenta {codigo_cuenta} en el período {periodo_aaaamm}"
-            )
-        
-        cuenta_detalle = libro_mayor[0]
-        
-        # Obtener detalle adicional del repositorio
-        from ..repositories.mayor_repository import MayorRepository
-        repository = MayorRepository(db)
-        
-        resumen_movimientos = await repository.obtener_resumen_movimientos_por_cuenta(
-            empresa_id=empresa_id,
-            periodo=periodo_aaaamm,
-            codigo_cuenta=codigo_cuenta
-        )
-        
+
+        if libro_mayor:
+            cuenta_detalle = libro_mayor[0]
+        else:
+            # Sin movimientos ni saldo inicial: verificar que al menos exista en el plan contable
+            from ..services import AccountingService
+            cuenta_plan = await AccountingService().plan_service.get_cuenta(codigo_cuenta)
+            if not cuenta_plan:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No se encontró la cuenta {codigo_cuenta} en el plan contable"
+                )
+            cuenta_detalle = {
+                "codigo_cuenta_contable": codigo_cuenta,
+                "descripcion_cuenta": cuenta_plan.descripcion,
+                "saldo_deudor_inicial": 0,
+                "saldo_acreedor_inicial": 0,
+                "movimiento_debe": 0,
+                "movimiento_haber": 0,
+                "saldo_final_deudor": 0,
+                "saldo_final_acreedor": 0,
+            }
+
         resultado = {
             "cuenta_mayor": cuenta_detalle,
             "resumen_movimientos": resumen_movimientos,
-            "periodo": periodo_aaaamm
+            "periodo_desde": periodo_desde,
+            "periodo_hasta": periodo_hasta
         }
-        
+
         logger.info(f"Detalle de cuenta {codigo_cuenta} obtenido para empresa {empresa_id}")
-        
+
         return resultado
-        
+
     except HTTPException:
         raise
     except AccountingException as e:
@@ -390,43 +478,20 @@ async def obtener_tipos_cuenta():
     Retorna los tipos de cuenta disponibles para clasificación
     según el plan contable general empresarial.
     """
-    try:
-        tipos = [
-            {"codigo": tipo.value, "descripcion": tipo.value.replace("_", " ").title()}
+    return {
+        "tipos_cuenta": [
+            {"codigo": tipo.value, "descripcion": tipo.name.replace("_", " ").title()}
             for tipo in TipoCuentaContable
+        ],
+        "naturalezas": [
+            {"codigo": nat.value, "descripcion": nat.name.title()}
+            for nat in NaturalezaCuenta
+        ],
+        "estados": [
+            {"codigo": est.value, "descripcion": est.name.replace("_", " ").title()}
+            for est in EstadoCuentaMayor
         ]
-        
-        return {
-            "tipos_cuenta": tipos,
-            "naturalezas": [
-                {"codigo": nat.value, "descripcion": nat.value.title()}
-                for nat in NaturalezaCuenta
-            ],
-            "estados": [
-                {"codigo": est.value, "descripcion": est.value.replace("_", " ").title()}
-                for est in EstadoCuentaMayor
-            ]
-        }
-    except Exception as e:
-        # Devolver datos hardcodeados temporalmente para debug
-        return {
-            "tipos_cuenta": [
-                {"codigo": "ACTIVO", "descripcion": "Activo"},
-                {"codigo": "PASIVO", "descripcion": "Pasivo"},
-                {"codigo": "PATRIMONIO", "descripcion": "Patrimonio"},
-                {"codigo": "INGRESOS", "descripcion": "Ingresos"},
-                {"codigo": "GASTOS", "descripcion": "Gastos"}
-            ],
-            "naturalezas": [
-                {"codigo": "DEUDORA", "descripcion": "Deudora"},
-                {"codigo": "ACREEDORA", "descripcion": "Acreedora"}
-            ],
-            "estados": [
-                {"codigo": "ACTIVO", "descripcion": "Activo"},
-                {"codigo": "INACTIVO", "descripcion": "Inactivo"}
-            ],
-            "error": str(e)
-        }
+    }
 
 
 # ================================

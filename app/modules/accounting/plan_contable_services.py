@@ -4,7 +4,7 @@ Implementación ligera que adapta partes del prototipo PlanContableService.
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
-from app.modules.accounting.repositories import AccountingRepository
+from app.modules.accounting.plan_contable_repository import AccountingRepository
 from app.models.plan_contable import (
     CuentaContableCreate,
     CuentaContableResponse,
@@ -62,9 +62,9 @@ class PlanContableServiceAdapter:
         return self._doc_to_response(created)
 
     async def obtener_estructura_jerarquica(self, empresa_id: str = None, tipo_plan: str = "estandar") -> Dict[str, Any]:
-        # Filtros para empresa y tipo de plan
-        filtros = {"nivel": 1, "activa": True}
-        
+        # Filtros para empresa y tipo de plan (sin restringir nivel: se trae todo el plan de una vez)
+        filtros = {"activa": True}
+
         if empresa_id and tipo_plan == "personalizado":
             filtros["empresa_id"] = empresa_id
             filtros["tipo_plan"] = "personalizado"
@@ -75,62 +75,48 @@ class PlanContableServiceAdapter:
                 {"empresa_id": {"$exists": False}},
                 {"empresa_id": None}
             ]
-        
-        # Delegar a repository: recuperar nivel 1 y construir árbol recursivo
-        clases = await self.repo.list_cuentas(filtros)
-        estructura = []
-        for clase in clases:
-            hijos = await self._obtener_hijos_recursivo(clase["codigo"], empresa_id, tipo_plan)
-            estructura.append({
-                "codigo": clase["codigo"],
-                "descripcion": clase["descripcion"],
-                "nivel": clase["nivel"],
-                "hijos": hijos,
-            })
 
-        return {"estructura": estructura, "total_clases": len(estructura)}
+        # Una sola consulta a Mongo y armado del árbol en memoria.
+        # Antes se hacía una consulta por cada nodo del árbol (recursiva), lo que con
+        # Mongo local pasaba desapercibido pero con MongoDB Atlas (latencia de red por
+        # consulta) hacía que este endpoint tardara minutos con un plan de ~3000 cuentas.
+        todas = await self.repo.list_cuentas(filtros)
 
-    async def _obtener_hijos_recursivo(self, codigo_padre: str, empresa_id: str = None, tipo_plan: str = "estandar") -> List[Dict[str, Any]]:
-        if not codigo_padre:
-            return []
-        nivel_padre = len(codigo_padre)
-        siguiente = nivel_padre + 1
-        if siguiente > 8:
-            return []
-        
-        # Preparar filtros base
-        regex = f"^{codigo_padre}[0-9]$" if siguiente == 2 else f"^{codigo_padre}[0-9]+$"
-        filtros = {
-            "codigo": {"$regex": regex}, 
-            "nivel": siguiente, 
-            "activa": True
-        }
-        
-        # Agregar filtros de empresa y tipo de plan
-        if empresa_id and tipo_plan == "personalizado":
-            filtros["empresa_id"] = empresa_id
-            filtros["tipo_plan"] = "personalizado"
-        else:
-            # Plan estándar
-            filtros["$or"] = [
-                {"tipo_plan": "estandar"},
-                {"empresa_id": {"$exists": False}},
-                {"empresa_id": None}
-            ]
-        
-        hijos = await self.repo.list_cuentas(filtros)
-        resultado = []
-        for hijo in hijos:
-            if len(hijo["codigo"]) == siguiente:
-                sub = await self._obtener_hijos_recursivo(hijo["codigo"], empresa_id, tipo_plan)
-                resultado.append({
+        por_codigo = {cuenta["codigo"]: cuenta for cuenta in todas}
+        hijos_por_padre: Dict[str, List[Dict[str, Any]]] = {}
+        for cuenta in todas:
+            codigo = cuenta["codigo"]
+            if len(codigo) <= 1:
+                continue
+            codigo_padre = codigo[:-1]
+            if codigo_padre in por_codigo:
+                hijos_por_padre.setdefault(codigo_padre, []).append(cuenta)
+
+        def construir_hijos(codigo_padre: str) -> List[Dict[str, Any]]:
+            hijos = sorted(hijos_por_padre.get(codigo_padre, []), key=lambda c: c["codigo"])
+            return [
+                {
                     "codigo": hijo["codigo"],
                     "descripcion": hijo["descripcion"],
                     "nivel": hijo["nivel"],
                     "es_hoja": hijo.get("es_hoja", True),
-                    "hijos": sub,
-                })
-        return resultado
+                    "hijos": construir_hijos(hijo["codigo"]),
+                }
+                for hijo in hijos
+            ]
+
+        clases = sorted((c for c in todas if c["nivel"] == 1), key=lambda c: c["codigo"])
+        estructura = [
+            {
+                "codigo": clase["codigo"],
+                "descripcion": clase["descripcion"],
+                "nivel": clase["nivel"],
+                "hijos": construir_hijos(clase["codigo"]),
+            }
+            for clase in clases
+        ]
+
+        return {"estructura": estructura, "total_clases": len(estructura)}
 
     async def obtener_estadisticas(self) -> EstadisticasPlanContable:
         total = await self.repo.count_documents({})
