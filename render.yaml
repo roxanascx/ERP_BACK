@@ -1,0 +1,43 @@
+# Blueprint de Render para el backend ERP (FastAPI + MongoDB Atlas)
+# Docs: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: erp-backend
+    runtime: python
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: "./build.sh"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.3
+      # Se piden al crear el servicio (nunca se guardan en el repo)
+      - key: MONGODB_URL
+        sync: false
+      - key: DATABASE_NAME
+        value: web-erp
+      # JSON o lista separada por comas con los dominios del frontend
+      - key: CORS_ORIGINS
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "False"
+      # Disco efímero: se borra en cada deploy/reinicio
+      - key: SIRE_FILE_STORAGE
+        value: /tmp/sire_files
+      # Credenciales SUNAT / SIRE (opcionales, se cargan desde el dashboard)
+      - key: SUNAT_RUC
+        sync: false
+      - key: SUNAT_USUARIO
+        sync: false
+      - key: SUNAT_CLAVE_SOL
+        sync: false
+      - key: SUNAT_CLIENT_ID
+        sync: false
+      - key: SUNAT_CLIENT_SECRET
+        sync: false

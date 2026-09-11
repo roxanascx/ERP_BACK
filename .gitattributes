@@ -1,0 +1,12 @@
+# Normalizar finales de linea: evita que Windows suba CRLF y rompa el build en Render
+* text=auto eol=lf
+
+# Estos DEBEN tener LF si o si (los ejecuta/lee Linux)
+*.sh        text eol=lf
+*.py        text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+.python-version text eol=lf
+runtime.txt     text eol=lf
+Procfile        text eol=lf
+requirements*.txt text eol=lf

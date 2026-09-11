@@ -1,9 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Script de build para Render
+set -o errexit   # aborta el deploy si algo falla
 
-# Render build script
-echo "🚀 Iniciando build del backend..."
+echo "🚀 Iniciando build del backend ERP..."
 
-# Instalar dependencias
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+pip install --no-cache-dir -r requirements.txt
 
 echo "✅ Backend build completado!"
