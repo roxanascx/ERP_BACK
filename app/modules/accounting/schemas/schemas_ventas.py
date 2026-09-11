@@ -132,6 +132,14 @@ class RegistroVentaResponse(RegistroVentaRequest):
     periodo: str = Field(..., description="Período AAAAMM")
     fecha_creacion: datetime = Field(..., description="Fecha de creación")
     fecha_actualizacion: Optional[datetime] = Field(None, description="Fecha de última actualización")
+
+    # Trazabilidad del puente SIRE -> contabilidad. Sin estos campos, la
+    # pantalla no puede distinguir un comprobante ya contabilizado de uno
+    # pendiente, ni saber de dónde salió.
+    origen: Optional[str] = Field(None, description="SIRE o MANUAL")
+    subdiario: Optional[str] = Field(None, description="Código del subdiario asignado")
+    asiento_numero: Optional[str] = Field(None, description="Asiento que generó, si ya se contabilizó")
+    car_sunat: Optional[str] = Field(None, description="Identificador del comprobante en SUNAT")
     
     class Config:
         from_attributes = True

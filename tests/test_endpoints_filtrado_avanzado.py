@@ -21,6 +21,8 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from app.main import app
 
 # Cliente de test de FastAPI
+# Las rutas se montan bajo /api/v1. Sin el prefijo, TestClient devolvia 404
+# y el test culpaba al endpoint en vez de a su propia URL.
 client = TestClient(app)
 
 # Variables de test
@@ -40,7 +42,7 @@ def test_endpoint_filtro_basico():
         "limite": 10
     }
     
-    response = client.post("/accounting/filtrado-avanzado/aplicar", json=payload)
+    response = client.post("/api/v1/accounting/filtrado-avanzado/aplicar", json=payload)
     
     print(f"Status code: {response.status_code}")
     
@@ -83,7 +85,7 @@ def test_endpoint_busqueda_cuentas():
         "limite": 5
     }
     
-    response = client.post("/accounting/filtrado-avanzado/buscar-cuentas", json=payload)
+    response = client.post("/api/v1/accounting/filtrado-avanzado/buscar-cuentas", json=payload)
     
     print(f"Status code: {response.status_code}")
     
@@ -115,7 +117,7 @@ def test_endpoint_estadisticas():
         "incluir_saldos_cero": True
     }
     
-    response = client.get("/accounting/filtrado-avanzado/estadisticas", params=params)
+    response = client.get("/api/v1/accounting/filtrado-avanzado/estadisticas", params=params)
     
     print(f"Status code: {response.status_code}")
     
@@ -158,7 +160,7 @@ def test_endpoint_agrupaciones():
         "periodo_hasta": "202412"
     }
     
-    response = client.get("/accounting/filtrado-avanzado/agrupaciones/TIPO_CUENTA", params=params)
+    response = client.get("/api/v1/accounting/filtrado-avanzado/agrupaciones/TIPO_CUENTA", params=params)
     
     print(f"Status code: {response.status_code}")
     
@@ -201,7 +203,7 @@ def test_filtro_avanzado_complejo():
         "incluir_estadisticas": False
     }
     
-    response = client.post("/accounting/filtrado-avanzado/aplicar", json=payload)
+    response = client.post("/api/v1/accounting/filtrado-avanzado/aplicar", json=payload)
     
     print(f"Status code: {response.status_code}")
     
@@ -248,7 +250,7 @@ def test_validacion_parametros():
         "periodo_hasta": "202412"
     }
     
-    response = client.post("/accounting/filtrado-avanzado/aplicar", json=payload_sin_empresa)
+    response = client.post("/api/v1/accounting/filtrado-avanzado/aplicar", json=payload_sin_empresa)
     print(f"Sin empresa_id - Status: {response.status_code}")
     assert response.status_code == 422, "Debe fallar sin empresa_id"
     
@@ -258,7 +260,7 @@ def test_validacion_parametros():
         "limite": 2000  # Excede el máximo permitido
     }
     
-    response = client.post("/accounting/filtrado-avanzado/aplicar", json=payload_limite_grande)
+    response = client.post("/api/v1/accounting/filtrado-avanzado/aplicar", json=payload_limite_grande)
     print(f"Límite excesivo - Status: {response.status_code}")
     assert response.status_code == 422, "Debe fallar con límite excesivo"
     

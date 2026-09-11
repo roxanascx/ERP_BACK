@@ -26,7 +26,7 @@ class SocioNegocioModel(BaseModel):
     
     # === IDENTIFICACIÓN ===
     tipo_documento: str = Field(..., description="RUC, DNI, CE")
-    numero_documento: str = Field(..., description="Número del documento", min_length=8, max_length=11)
+    numero_documento: str = Field(..., description="Número del documento", min_length=8, max_length=12)
     
     # === DATOS BÁSICOS ===
     razon_social: str = Field(..., description="Razón social/Nombre completo")

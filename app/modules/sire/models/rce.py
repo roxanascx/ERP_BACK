@@ -6,7 +6,7 @@ Basado en Manual SUNAT SIRE Compras v27.0
 from datetime import datetime, date
 from typing import List, Optional, Dict, Any, Union
 from decimal import Decimal
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 
 
@@ -173,14 +173,16 @@ class RceComprobante(BaseModel):
     fecha_registro: datetime = Field(default_factory=datetime.utcnow)
     observaciones: Optional[str] = Field(None, description="Observaciones")
     
-    @validator('periodo')
+    @field_validator('periodo')
+    @classmethod
     def validate_periodo(cls, v):
         if not v or len(v) != 6 or not v.isdigit():
             raise ValueError('Periodo debe tener formato YYYYMM')
         return v
     
-    @validator('importe_total')
-    def validate_importe_total(cls, v, values):
+    @field_validator('importe_total')
+    @classmethod
+    def validate_importe_total(cls, v):
         # Validar que el importe total sea coherente con los subtotales
         if v < 0:
             raise ValueError('Importe total no puede ser negativo')

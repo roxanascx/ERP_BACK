@@ -55,12 +55,33 @@ class SocioNegocioService:
             es_valido, mensaje = validar_documento(socio_data.tipo_documento, socio_data.numero_documento)
             if not es_valido:
                 raise SocioValidationException(f"Documento inválido: {mensaje}")
-            
+
+            # Separar los datos de SUNAT (si vienen de una consulta previa en el
+            # formulario) del resto de campos, ya que en el modelo tienen otro
+            # nombre (sufijo _sunat en vez de _contribuyente)
+            socio_dict = socio_data.model_dump()
+            estado_contribuyente = socio_dict.pop('estado_contribuyente', None)
+            condicion_contribuyente = socio_dict.pop('condicion_contribuyente', None)
+            tipo_contribuyente = socio_dict.pop('tipo_contribuyente', None)
+            actividad_economica = socio_dict.pop('actividad_economica', None)
+
+            datos_sunat_disponibles = bool(
+                estado_contribuyente or condicion_contribuyente or
+                tipo_contribuyente or actividad_economica
+            )
+
             # Crear modelo
             socio = SocioNegocioModel(
-                **socio_data.model_dump(),
+                **socio_dict,
+                estado_sunat=estado_contribuyente,
+                condicion_sunat=condicion_contribuyente,
+                tipo_contribuyente=tipo_contribuyente,
+                actividad_economica=actividad_economica,
                 empresa_id=empresa_id,
-                requiere_actualizacion=socio_data.tipo_documento == 'RUC'  # Solo RUC requiere sync con SUNAT
+                datos_sunat_disponibles=datos_sunat_disponibles,
+                ultimo_sync_sunat=datetime.utcnow() if datos_sunat_disponibles else None,
+                # Solo RUC requiere sync con SUNAT, y solo si aún no llegó con datos ya consultados
+                requiere_actualizacion=socio_data.tipo_documento == 'RUC' and not datos_sunat_disponibles
             )
             
             # Guardar en repositorio

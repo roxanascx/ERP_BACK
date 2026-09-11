@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, validator
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 
 
@@ -160,7 +160,9 @@ class AsientoContableResponseV2(AsientoContableBaseV2):
 class LibroDiarioBaseV2(BaseModel):
     """Schema base para libro diario v2"""
     descripcion: str = Field(..., max_length=200)
-    periodo: str = Field(..., pattern=r"^\d{6}$")  # YYYYMM formato SUNAT
+    # Acepta "YYYY" (ejercicio completo), "YYYYMM" o "YYYY-MM" (mes concreto,
+    # formato SUNAT) - el formulario de alta invita a las tres formas.
+    periodo: str = Field(..., pattern=r"^\d{4}(-\d{2}|\d{2})?$")
     estado: EstadoLibroDiario = EstadoLibroDiario.BORRADOR
     moneda: str = Field(default="PEN")
     tipoLibro: str = Field(default="5.1")
@@ -199,12 +201,37 @@ class AsientoContableBase(BaseModel):
     """Schema base para asientos contables"""
     numeroCorrelativo: str
     fecha: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")  # YYYY-MM-DD
+
+    @field_validator("fecha", mode="before")
+    @classmethod
+    def fecha_como_texto(cls, v):
+        """
+        Aceptar tambien `datetime` y `date`.
+
+        No es una comodidad: el libro diario se lee entero de una vez, asi que
+        **una sola linea con la fecha mal tipada devolvia un 404 para todo el
+        libro**, incluidos los asientos correctos. Normalizar aqui hace que el
+        peor caso sea una fila rara, no un libro inaccesible.
+        """
+        if isinstance(v, datetime):
+            return v.strftime("%Y-%m-%d")
+        if isinstance(v, date):
+            return v.isoformat()
+        return v
     glosa: str = Field(..., max_length=500)
     codigoLibro: str = Field(default="5.1")  # Libro Diario por defecto
     numeroDocumento: str = Field(..., max_length=50)
     cuentaContable: Dict[str, str]  # {codigo: str, denominacion: str}
     debe: float = Field(ge=0)
     haber: float = Field(ge=0)
+
+    # Identificador de la operación/asiento padre. El modelo guarda cada
+    # movimiento de cuenta como un documento independiente ("plano"), así
+    # que varias líneas (debe/haber de una misma operación) comparten este
+    # valor para poder reconstruir el asiento agrupado y, en la exportación
+    # PLE a SUNAT, asignarles un mismo CUO con correlativo local por línea
+    # (ver ple_formatter_sunat_v3.formatear_lote_asientos).
+    numeroAsiento: Optional[str] = Field(None, max_length=50)
     
     @validator('cuentaContable')
     def validate_cuenta_contable(cls, v):
@@ -239,6 +266,7 @@ class AsientoContableUpdate(BaseModel):
     cuentaContable: Optional[Dict[str, str]] = None
     debe: Optional[float] = None
     haber: Optional[float] = None
+    numeroAsiento: Optional[str] = None
 
 
 class AsientoContableResponse(AsientoContableBase):
@@ -249,6 +277,16 @@ class AsientoContableResponse(AsientoContableBase):
     fechaCreacion: Optional[datetime] = None
     fechaModificacion: Optional[datetime] = None
 
+    # Trazabilidad de la contabilizacion automatica. Se guardaba pero no se
+    # exponia, asi que en la pantalla del libro no habia forma de saber si un
+    # asiento venia de ventas o de compras, ni a que lote pertenecia para
+    # poder deshacerlo.
+    codigoLibroOrigen: Optional[str] = Field(
+        None, description="Codigo del subdiario que origino el asiento (PLE 5.1)"
+    )
+    lote_contabilizacion: Optional[str] = None
+    origen: Optional[str] = None
+
     class Config:
         from_attributes = True
 
@@ -256,7 +294,9 @@ class AsientoContableResponse(AsientoContableBase):
 class LibroDiarioBase(BaseModel):
     """Schema base para libro diario"""
     descripcion: str = Field(..., max_length=200)
-    periodo: str = Field(..., pattern=r"^\d{6}$")  # YYYYMM formato SUNAT
+    # Acepta "YYYY" (ejercicio completo), "YYYYMM" o "YYYY-MM" (mes concreto,
+    # formato SUNAT) - el formulario de alta invita a las tres formas.
+    periodo: str = Field(..., pattern=r"^\d{4}(-\d{2}|\d{2})?$")
     estado: EstadoLibroDiario = EstadoLibroDiario.BORRADOR
     moneda: str = Field(default="PEN")
     tipoLibro: str = Field(default="5.1")
@@ -283,6 +323,11 @@ class LibroDiarioResponse(LibroDiarioBase):
     ruc: str
     razonSocial: str
     asientos: List[AsientoContableResponse] = []
+    # En el listado los asientos no se cargan (serian miles de lineas por
+    # libro), pero la tarjeta necesita saber cuantos hay. Se cuenta aparte,
+    # agrupando por numeroAsiento: la coleccion guarda una fila por linea,
+    # asi que contar documentos daria un numero inflado.
+    totalAsientos: int = 0
     totalDebe: float = 0.0
     totalHaber: float = 0.0
     fechaCreacion: Optional[datetime] = None

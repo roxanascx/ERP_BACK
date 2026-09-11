@@ -3,6 +3,7 @@ Servicio SUNAT para consultas RUC
 Basado en el código funcional proporcionado
 """
 
+import asyncio
 import requests
 import json
 import time
@@ -92,9 +93,12 @@ class SunatService:
         """Consulta usando API principal"""
         try:
             url = f"{self.base_url}?numero={ruc}"
-            
-            # Usar requests de forma síncrona (para mantener compatibilidad)
-            response = requests.get(url, headers=self.headers, timeout=self.timeout)
+
+            # requests es síncrono/bloqueante: se ejecuta en un thread aparte
+            # para no bloquear el event loop de FastAPI mientras dura la consulta
+            response = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: requests.get(url, headers=self.headers, timeout=self.timeout)
+            )
             
             if response.status_code == 200:
                 data = response.json()
@@ -124,7 +128,9 @@ class SunatService:
         """Consulta usando APIs de respaldo"""
         try:
             url = f"{backup_url}{ruc}"
-            response = requests.get(url, headers=self.headers, timeout=8)
+            response = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: requests.get(url, headers=self.headers, timeout=8)
+            )
             
             if response.status_code == 200:
                 data = response.json()

@@ -22,6 +22,6 @@ class RucConsultaException(SocioNegocioException):
     """Excepción en la consulta de RUC"""
     pass
 
-class SunatServiceException(SocioNegocioException):
-    """Excepción del servicio SUNAT"""
+class DniConsultaException(SocioNegocioException):
+    """Excepción en la consulta de DNI"""
     pass

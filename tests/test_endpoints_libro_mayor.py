@@ -16,6 +16,8 @@ from app.main import app
 from app.database import get_database
 
 # Configuración de test
+# Las rutas se montan bajo /api/v1. Sin el prefijo, TestClient devolvia 404
+# y el test culpaba al endpoint en vez de a su propia URL.
 client = TestClient(app)
 
 class TestEndpointsLibroMayor:
@@ -24,16 +26,29 @@ class TestEndpointsLibroMayor:
     @classmethod
     def setup_class(cls):
         """Configuración inicial"""
-        cls.empresa_ruc = "20611554282"
-        cls.empresa_id = "empresa_demo"
-        cls.periodo = "202508"
+        # Salen de los asientos que hay en la base. Estaban cableados a una
+        # empresa y un periodo de 2025 que ya no existen, asi que el endpoint
+        # respondia bien pero sobre cero registros.
+        from pymongo import MongoClient
+
+        from app.config import settings
+
+        db = MongoClient(settings.MONGODB_URL)[settings.DATABASE_NAME]
+        muestra = db.asientos_contables.find_one({"empresaId": {"$ne": None}})
+
+        if not muestra:
+            pytest.skip("No hay asientos contables para probar los endpoints")
+
+        cls.empresa_id = muestra["empresaId"]
+        cls.empresa_ruc = muestra["empresaId"]
+        cls.periodo = (muestra.get("fecha") or "")[:7].replace("-", "") or "202606"
         
     def test_01_endpoint_validar_compatibilidad(self):
         """Test 1: Endpoint de validación de compatibilidad"""
         print(f"\n🔗 TEST 1: Endpoint validar compatibilidad...")
         
         response = client.get(
-            f"/accounting/libro-mayor/validar-compatibilidad-datos-reales",
+            f"/api/v1/accounting/libro-mayor/validar-compatibilidad-datos-reales",
             params={
                 "empresa_id": self.empresa_id,
                 "empresa_ruc": self.empresa_ruc
@@ -55,13 +70,13 @@ class TestEndpointsLibroMayor:
         print(f"\n📄 TEST 2: Endpoint generar PLE...")
         
         response = client.post(
-            f"/accounting/libro-mayor/generar-ple-datos-reales",
-            json={
+            f"/api/v1/accounting/libro-mayor/generar-ple-datos-reales",
+            params={
                 "empresa_id": self.empresa_id,
                 "empresa_ruc": self.empresa_ruc,
                 "periodo_aaaamm": self.periodo,
-                "correlativo": "001"
-            }
+                "correlativo": "001",
+            },
         )
         
         print(f"   📡 Status: {response.status_code}")
@@ -77,7 +92,9 @@ class TestEndpointsLibroMayor:
             
             assert data['archivo_generado'] == True
             assert data['total_registros'] > 0
-            assert 'contenido_archivo' in data
+            # La ruta devuelve un extracto, no el archivo entero: para bajarlo
+            # hay que pedirlo con generar_archivo_fisico=true.
+            assert 'preview_contenido' in data
         
         print(f"   🏁 Test endpoint completado")
 

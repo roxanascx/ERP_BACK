@@ -9,11 +9,13 @@ from ..modules.sire.routes import auto_auth as sire_auto_auth_routes
 # Importar nuevas rutas RCE
 from ..modules.sire.routes import rce_comprobantes_routes as sire_rce_comprobantes_routes
 from ..modules.sire.routes import rce_propuestas_routes as sire_rce_propuestas_routes
-from ..modules.sire.routes import rce_resumen_routes as sire_rce_resumen_routes
 from ..modules.sire.routes import rce_procesos_routes as sire_rce_procesos_routes
 from ..modules.sire.routes import rce_consultas_routes as sire_rce_consultas_routes
 from ..modules.sire.routes import rce_data_routes as sire_rce_data_routes
 from ..modules.sire.routes import rce_comprobante_bd as sire_rce_bd_routes
+from ..modules.sire.routes import rce_ciclo_routes as sire_rce_ciclo_routes
+from ..modules.sire.routes import rce_cargas_routes as sire_rce_cargas_routes
+from ..modules.sire.routes import rvie_ciclo_routes as sire_rvie_ciclo_routes
 
 # Importar nuevas rutas RVIE BD
 from ..modules.sire.routes import rvie_comprobante_bd as sire_rvie_bd_routes
@@ -85,10 +87,26 @@ api_router.include_router(
     tags=["SIRE-RCE-Propuestas"]
 )
 
+# Ciclo de vida del periodo RCE: aceptar propuesta (5.2) y registrar
+# preliminar (5.4). Son las rutas que escriben en SUNAT.
 api_router.include_router(
-    sire_rce_resumen_routes.router,
-    prefix="/sire/rce/resumen",
-    tags=["SIRE-RCE-Resumen"]
+    sire_rce_ciclo_routes.router,
+    prefix="/sire/rce/ciclo",
+    tags=["SIRE-RCE-Ciclo"]
+)
+
+# Cargas de archivos al RCE por tus.io (5.3 y 5.5-5.9).
+api_router.include_router(
+    sire_rce_cargas_routes.router,
+    prefix="/sire/rce/cargas",
+    tags=["SIRE-RCE-Cargas"]
+)
+
+# Ciclo de vida del periodo RVIE (ventas): 5.8, 5.9, 5.15, 5.36, 5.37.
+api_router.include_router(
+    sire_rvie_ciclo_routes.router,
+    prefix="/sire/rvie/ciclo",
+    tags=["SIRE-RVIE-Ciclo"]
 )
 
 api_router.include_router(

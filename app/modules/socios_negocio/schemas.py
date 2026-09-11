@@ -14,25 +14,32 @@ class SocioNegocioCreate(BaseModel):
     nombre_comercial: Optional[str] = Field(None)
     tipo_socio: str = Field(..., description="proveedor, cliente, ambos")
     categoria: Optional[str] = Field(None)
-    
+
     # Ubicación
     direccion: Optional[str] = Field(None)
     ubigeo: Optional[str] = Field(None)
     departamento: Optional[str] = Field(None)
     provincia: Optional[str] = Field(None)
     distrito: Optional[str] = Field(None)
-    
+
     # Contacto
     telefono: Optional[str] = Field(None)
     celular: Optional[str] = Field(None)
     email: Optional[str] = Field(None)
     contacto_principal: Optional[str] = Field(None)
-    
+
     # Financiero
     moneda_preferida: str = Field("PEN")
     condicion_pago: Optional[str] = Field(None)
     limite_credito: Optional[float] = Field(None)
-    
+
+    # Datos obtenidos de una consulta previa a SUNAT (solo aplica a RUC).
+    # Se guardan junto con el socio para que no se pierdan al crearlo.
+    estado_contribuyente: Optional[str] = Field(None)
+    condicion_contribuyente: Optional[str] = Field(None)
+    tipo_contribuyente: Optional[str] = Field(None)
+    actividad_economica: Optional[str] = Field(None)
+
     # Observaciones
     observaciones: Optional[str] = Field(None)
     activo: bool = Field(True)

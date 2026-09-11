@@ -98,7 +98,7 @@ class ExchangeRate(BaseModel):
             date: lambda v: v.isoformat(),
             Decimal: lambda v: float(v)
         }
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "fecha": "2025-08-24",
                 "moneda_origen": "USD",

@@ -424,33 +424,11 @@ async def poblar_datos_historicos(
         )
         
         return resultado
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error poblando datos históricos: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error interno: {str(e)}"
-        )
-
-
-@router.get(
-    "/tipos-cambio/estado",
-    summary="Estado del servicio de tipos de cambio"
-)
-async def estado_tipos_cambio():
-    """
-    Obtiene el estado actual del servicio de tipos de cambio
-    
-    Incluye disponibilidad de API externa y estadísticas de base de datos
-    """
-    try:
-        estado = await exchange_rate_service.verificar_estado_servicio()
-        return estado
-        
-    except Exception as e:
-        logger.error(f"Error verificando estado de tipos de cambio: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno: {str(e)}"

@@ -1,175 +1,214 @@
 """
-Cliente HTTP para API SUNAT SIRE
+Cliente HTTP para la API SUNAT SIRE.
+
+Es la única puerta hacia SUNAT: las URLs salen de `sunat_endpoints` (verificadas
+contra el manual v22) y el patrón asíncrono del manual —lanzar la operación,
+recoger el `numTicket`, sondear 5.31, descargar con 5.32 y descomprimir— vive
+resuelto una sola vez en `ejecutar_operacion_con_ticket`.
+
+Lo que sustituye: un diccionario de 67 endpoints que no usaba nadie, con rutas
+que no coincidían con el manual, y 16 métodos `rce_*` que apuntaban a claves
+inexistentes de ese mismo diccionario (todos lanzaban `KeyError` si se les
+llamaba). Las URLs buenas estaban copiadas a mano dentro de las rutas.
 """
 
-import httpx
 import asyncio
-import json
-from typing import Dict, Any, Optional, Union
-from datetime import datetime, timedelta
+import io
 import logging
+import zipfile
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
+
+import httpx
+
 from ..models.auth import SireCredentials, SireTokenData
-from ..models.responses import SireApiResponse, SireErrorResponse
-from ..utils.exceptions import SireApiException, SireAuthException, SireTimeoutException
+from ..utils.exceptions import (
+    SireApiException,
+    SireAuthException,
+    SireTimeoutException,
+    SunatValidationException,
+)
+from . import sunat_endpoints as ep
+from . import sunat_endpoints_rvie as ep_rvie
+from .sunat_endpoints import CodLibro, CodOrigenEnvio, CodTipoArchivo, CodTipoResumen
+from .sunat_endpoints_rvie import CodTipoArchivoRvie
+from .tus_uploader import ResultadoCarga, TusUploader, comprimir_txt
 
 logger = logging.getLogger(__name__)
 
 
+class EstadoTicket:
+    """
+    Códigos de `codEstadoProceso` del servicio de tickets (5.31 en Compras,
+    5.16 en Ventas: es el mismo endpoint compartido).
+
+    Estos valores salen del **Anexo III del manual de Ventas v30**, que es el
+    único de los dos manuales que los documenta. Antes se heredaban de un mapeo
+    escrito a mano en `rvie_service`, y estaba equivocado: daba el 04 por error
+    cuando en realidad significa «procesado sin errores», y el 05 por rechazo
+    cuando es «en proceso».
+    """
+
+    CARGADO = "01"              # Cargado (solicitado)
+    VALIDANDO = "02"            # Validando archivo
+    PROCESADO_CON_ERRORES = "03"
+    PROCESADO_SIN_ERRORES = "04"
+    EN_PROCESO = "05"
+    TERMINADO = "06"
+
+
+#: Estados en los que ya no tiene sentido seguir sondeando.
+ESTADOS_TERMINALES = frozenset({
+    EstadoTicket.PROCESADO_CON_ERRORES,
+    EstadoTicket.PROCESADO_SIN_ERRORES,
+    EstadoTicket.TERMINADO,
+})
+
+#: El único estado terminal que significa que la operación falló.
+ESTADOS_FALLIDOS = frozenset({EstadoTicket.PROCESADO_CON_ERRORES})
+
+DESCRIPCION_ESTADO = {
+    EstadoTicket.CARGADO: "Cargado",
+    EstadoTicket.VALIDANDO: "Validando archivo",
+    EstadoTicket.PROCESADO_CON_ERRORES: "Procesado con errores",
+    EstadoTicket.PROCESADO_SIN_ERRORES: "Procesado sin errores",
+    EstadoTicket.EN_PROCESO: "En proceso",
+    EstadoTicket.TERMINADO: "Terminado",
+}
+
+
+@dataclass
+class ArchivoTicket:
+    """Un archivo devuelto por una operación con ticket, ya descomprimido."""
+    nombre: str
+    contenido: bytes
+
+    @property
+    def texto(self) -> str:
+        """
+        El contenido como texto.
+
+        SUNAT entrega los TXT en UTF-8, y ahí es donde van las columnas con
+        tilde ("Razón social", "Fecha de emisión"), que el parser localiza por
+        nombre: decodificarlas mal deja esos campos vacíos sin dar ningún error.
+        Se conserva latin-1 de reserva porque algunos reportes vienen así.
+        """
+        try:
+            return self.contenido.decode("utf-8")
+        except UnicodeDecodeError:
+            return self.contenido.decode("latin-1", errors="replace")
+
+
+@dataclass
+class ResultadoTicket:
+    """Resultado completo de una operación asíncrona de SUNAT."""
+    num_ticket: str
+    cod_estado: str
+    descripcion: str = ""
+    archivos: List[ArchivoTicket] = field(default_factory=list)
+    registro: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def exitoso(self) -> bool:
+        return self.cod_estado == EstadoTicket.TERMINADO
+
+    @property
+    def texto(self) -> str:
+        """Concatena el contenido de todos los archivos. Lo habitual es que haya uno."""
+        return "\n".join(a.texto for a in self.archivos)
+
+
 class SunatApiClient:
-    """Cliente HTTP para comunicación con API SUNAT SIRE"""
-    
+    """Cliente HTTP para comunicación con la API SUNAT SIRE."""
+
     def __init__(self, base_url: Optional[str] = None, timeout: int = 30):
         """
-        Inicializar cliente API
-        
         Args:
-            base_url: URL base de la API SUNAT (usar prod o testing)
-            timeout: Timeout para requests en segundos
+            base_url: sobrescribe el dominio de la API SIRE (para pruebas).
+            timeout: tiempo máximo por petición, en segundos.
         """
-        # URLs de SUNAT según Manual v25 (corregidas según documentación oficial)
-        # Producción: https://api-sire.sunat.gob.pe/v1
-        self.base_url = base_url or "https://api-sire.sunat.gob.pe/v1"
-        self.auth_url = "https://api-seguridad.sunat.gob.pe/v1/clientessol"
-        
-        # Endpoints específicos según manual SUNAT OFICIAL v25 (RVIE) y v27.0 (RCE)
-        self.endpoints = {
-            # ========================================
-            # AUTENTICACIÓN
-            # ========================================
-            "auth_token": "/clientessol/{client_id}/oauth2/token",
-            
-            # ========================================
-            # RVIE - Registro de Ventas e Ingresos Electrónico (Manual v25)
-            # ========================================
-            "rvie_consultar_periodos": "/contribuyente/migeigv/libros/rvierce/padron/web/omisos/140000/periodos",  # 5.2 según Manual v25
-            "rvie_descargar_propuesta": "/contribuyente/migeigv/libros/rvie/propuesta/web/propuesta/{periodo}/exportapropuesta",  # URL CORRECTA línea 2893
-            "rvie_aceptar_propuesta": "/contribuyente/migeigv/libros/rvie/propuesta/web/propuesta/{periodo}/aceptapropuesta",
-            "rvie_reemplazar_propuesta": "/contribuyente/migeigv/libros/rvie/propuesta/web/reemplazarpropuesta", 
-            "rvie_registrar_preliminar": "/contribuyente/migeigv/libros/rvie/preliminar/web/preliminarregistrado",
-            "rvie_inconsistencias": "/contribuyente/migeigv/libros/rvie/inconsistencias/web/inconsistenciascomprobantes",
-            "rvie_resumen": "/contribuyente/migeigv/libros/rvie/resumen/web/resumencomprobantes/{periodo}/{codTipoResumen}/{codTipoArchivo}",
-            
-            # ========================================
-            # RCE - Registro de Compras Electrónico (Manual v27.0)
-            # ========================================
-            
-            # SERVICIOS PRINCIPALES (Sección 2 del manual)
-            "rce_aceptar_propuesta": "/contribuyente/migeigv/libros/rce/propuesta/web/aceptarpropuesta",  # 5.2
-            "rce_importar_reemplazo": "/contribuyente/migeigv/libros/rce/propuesta/web/reemplazarpropuesta",  # 5.3
-            "rce_registrar_preliminar": "/contribuyente/migeigv/libros/rce/preliminar/web/preliminarregistrado",  # 5.4
-            "rce_cargar_no_domiciliados": "/contribuyente/migeigv/libros/rce/preliminar/web/registrocomprasnodomiciliados",  # 5.5
-            
-            # SERVICIOS COMPLEMENTARIOS
-            "rce_importar_complementarios": "/contribuyente/migeigv/libros/rce/propuesta/web/datoscomplementarios",  # 5.6
-            "rce_importar_nuevos_comprobantes": "/contribuyente/migeigv/libros/rce/preliminar/web/importarnuevoscomprobantes",  # 5.7
-            "rce_incluir_excluir": "/contribuyente/migeigv/libros/rce/propuesta/web/incluirexcluircomprobante",  # 5.8
-            "rce_importar_nuevos_cp": "/contribuyente/migeigv/libros/rce/propuesta/web/importarnuevoscomprobantespago",  # 5.9
-            "rce_tipo_cambio_masivo": "/contribuyente/migeigv/libros/rce/propuesta/web/tipocambiomasivo",  # 5.10
-            "rce_reintegro_credito": "/contribuyente/migeigv/libros/rce/propuesta/web/reintegrocreditofiscal",  # 5.11
-            "rce_credito_especial": "/contribuyente/migeigv/libros/rce/propuesta/web/creditofiscalespecial",  # 5.12
-            "rce_coeficiente_prorrata": "/contribuyente/migeigv/libros/rce/propuesta/web/coeficienteprorrata",  # 5.13
-            "rce_consultar_fv0621": "/contribuyente/migeigv/libros/rce/propuesta/web/consultafv0621",  # 5.14
-            "rce_eliminar_comprobante_propuesta": "/contribuyente/migeigv/libros/rce/propuesta/web/eliminarcomprobante",  # 5.15
-            "rce_eliminar_comprobante_preliminar": "/contribuyente/migeigv/libros/rce/preliminar/web/eliminarcomprobante",  # 5.16
-            "rce_eliminar_preliminar": "/contribuyente/migeigv/libros/rce/preliminar/web/eliminarpreliminares",  # 5.17
-            
-            # AJUSTES POSTERIORES
-            "rce_cargar_ajustes": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/cargarajustesposteriores",  # 5.18
-            "rce_enviar_ajustes": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/enviarajustesposteriores",  # 5.19
-            "rce_eliminar_ajustes": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/eliminarcomprobante",  # 5.20
-            "rce_cargar_ajustes_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/cargarajustesposterioresnodomiciliados",  # 5.21
-            "rce_enviar_ajustes_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/enviarajustesposterioresnodomiciliados",  # 5.22
-            "rce_eliminar_ajustes_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/eliminarcomprobantenodomiciliado",  # 5.23
-            
-            # AJUSTES PERIODOS ANTERIORES
-            "rce_cargar_ajustes_anteriores": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/cargarajustesposterioresperiodosanteriores",  # 5.24
-            "rce_enviar_ajustes_anteriores": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/enviarajustesposterioresperiodosanteriores",  # 5.25
-            "rce_eliminar_ajustes_anteriores": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/eliminarcomprobanteperiodosanteriores",  # 5.26
-            "rce_cargar_ajustes_anteriores_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/cargarajustesposterioresperiodosanterioresnodomiciliados",  # 5.27
-            "rce_enviar_ajustes_anteriores_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/enviarajustesposterioresperiodosanterioresnodomiciliados",  # 5.28
-            "rce_eliminar_ajustes_anteriores_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/eliminarcomprobanteperiodosanterioresnodomiciliados",  # 5.29
-            
-            # CONSULTAS Y DESCARGAS
-            "rce_consultar_ano_mes": "/contribuyente/migeigv/libros/rce/consulta/web/consultaanomes",  # 5.33
-            "rce_descargar_propuesta": "/contribuyente/migeigv/libros/rce/propuesta/web/propuesta/{periodo}/exportacioncomprobantepropuesta/{codTipoArchivo}",  # 5.34
-            "rce_descargar_resumen": "/contribuyente/migeigv/libros/rce/resumen/web/resumencomprobantes/{periodo}/{codTipoArchivo}",  # 5.35
-            "rce_descargar_inconsistencias_rce": "/contribuyente/migeigv/libros/rce/inconsistencias/web/resumeninconsistenciasrce",  # 5.36
-            "rce_descargar_excluidos": "/contribuyente/migeigv/libros/rce/propuesta/web/excluidos",  # 5.37
-            "rce_eliminar_no_domiciliado": "/contribuyente/migeigv/libros/rce/preliminar/web/eliminarcomprobantenodomiciliado",  # 5.38
-            "rce_exportar_preliminar_no_dom": "/contribuyente/migeigv/libros/rce/preliminar/web/exportarpreliminareregistrocomprasnodomiciliados",  # 5.39
-            "rce_exportar_preliminar": "/contribuyente/migeigv/libros/rce/preliminar/web/exportarpreliminareregistrocompras",  # 5.40
-            "rce_descargar_casillas": "/contribuyente/migeigv/libros/rce/reporte/web/reportecasillas",  # 5.41
-            "rce_inconsistencias_preliminar": "/contribuyente/migeigv/libros/rce/inconsistencias/web/inconsistenciasregistropreliminareregistrado",  # 5.42
-            "rce_inconsistencias_montos": "/contribuyente/migeigv/libros/rce/inconsistencias/web/inconsistenciasmontostotales",  # 5.43
-            "rce_inconsistencias_comprobantes": "/contribuyente/migeigv/libros/rce/inconsistencias/web/inconsistenciascomprobantes",  # 5.44
-            
-            # DESCARGAS DE AJUSTES
-            "rce_descargar_ajustes": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/descargarajustesposteriores",  # 5.45
-            "rce_descargar_ajustes_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/descargarajustesposterioresnodomiciliados",  # 5.46
-            "rce_descargar_ajustes_anteriores": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/descargarajustesposterioresperiodosanteriores",  # 5.47
-            "rce_descargar_ajustes_anteriores_no_dom": "/contribuyente/migeigv/libros/rce/ajustesposteriores/web/descargarajustesposterioresperiodosanterioresnodomiciliados",  # 5.48
-            
-            # REPORTES
-            "rce_constancia_recepcion": "/contribuyente/migeigv/libros/rce/reporte/web/constanciarecepcion",  # 5.49
-            "rce_reporte_consolidado": "/contribuyente/migeigv/libros/rce/reporte/web/reporteconsolidadoregistroperiodo",  # 5.50
-            "rce_descargar_periodo": "/contribuyente/migeigv/libros/rce/reporte/web/descargarrceperiodo",  # 5.51
-            "rce_reporte_inconsistencias_periodo": "/contribuyente/migeigv/libros/rce/reporte/web/reporteinconsistenciasperiodo",  # 5.52
-            "rce_reporte_car": "/contribuyente/migeigv/libros/rce/reporte/web/reportecar",  # 5.53
-            "rce_estadistico_proveedor": "/contribuyente/migeigv/libros/rce/reporte/web/reporteestadisticocomprasprovedorperiodo",  # 5.54
-            "rce_estadistico_nc_nd": "/contribuyente/migeigv/libros/rce/reporte/web/reporteestadisticonotacreditonotadebitoproveedorperiodo",  # 5.55
-            "rce_estadistico_dia": "/contribuyente/migeigv/libros/rce/reporte/web/reporteestadisticocomprasdiaperiodo",  # 5.56
-            "rce_estadistico_ciiu": "/contribuyente/migeigv/libros/rce/reporte/web/reporteestadisticocomprasciiu",  # 5.57
-            "rce_reporte_cumplimiento": "/contribuyente/migeigv/libros/rce/reporte/web/reportecumplimiento",  # 5.58
-            "rce_consultar_ajustes": "/contribuyente/migeigv/libros/rce/consulta/web/consultarajustesposterioresrce",  # 5.59
-            "rce_eliminar_preliminar_registrado": "/contribuyente/migeigv/libros/rce/preliminar/web/eliminarpreliminareregistrado",  # 5.60
-            "rce_consultar_preliminares": "/contribuyente/migeigv/libros/rce/consulta/web/consultarpreliminareregistrados",  # 5.61
-            
-            # ========================================
-            # TICKETS (Compartidos entre RVIE y RCE)
-            # ========================================
-            "consultar_ticket": "/contribuyente/migeigv/ticket/{ticket_id}/estado",  # 5.31
-            "descargar_archivo": "/contribuyente/migeigv/ticket/{ticket_id}/archivo/{nombre_archivo}"  # 5.32
-        }
-        
+        self.base_url = base_url or ep.API_SIRE
+        self.auth_url = f"{ep.API_SEGURIDAD}/clientessol"
+
         self.timeout = timeout
         self.max_retries = 3
         self.retry_delay = 1  # segundos
-        
-        # Headers por defecto
+
         self.default_headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "ERP-SIRE-Client/1.0.0"
+            "User-Agent": "ERP-SIRE-Client/1.0.0",
         }
-        
-        # Cliente HTTP con configuración
+
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(self.timeout),
-            limits=httpx.Limits(max_keepalive_connections=10, max_connections=100)
+            limits=httpx.Limits(max_keepalive_connections=10, max_connections=100),
         )
-    
+
     async def close(self):
         """Cerrar cliente HTTP"""
         await self.client.aclose()
-    
+
     async def __aenter__(self):
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
-    
-    def _build_headers(self, token: Optional[str] = None, extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-        """Construir headers para request"""
+
+    # ==================================================================
+    # NÚCLEO HTTP
+    # ==================================================================
+
+    def _build_headers(
+        self, token: Optional[str] = None, extra_headers: Optional[Dict[str, str]] = None
+    ) -> Dict[str, str]:
+        """Construir headers para la petición"""
         headers = self.default_headers.copy()
-        
+
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        
+
         if extra_headers:
             headers.update(extra_headers)
-        
+
         return headers
-    
+
+    @staticmethod
+    def _levantar_error_sunat(response: httpx.Response) -> None:
+        """
+        Traducir una respuesta de error de SUNAT a una excepción del módulo.
+
+        El 422 es el caso que importa: SUNAT devuelve
+        `{"cod": "422", "msg": "...", "errors": [{"cod": "1001", "msg": "..."}]}`
+        y esa lista es lo único que dice qué hay que corregir. Se conserva entera
+        en la excepción en vez de aplastarla a un string.
+        """
+        cuerpo: Dict[str, Any] = {}
+        try:
+            cuerpo = response.json()
+        except Exception:
+            cuerpo = {}
+
+        if response.status_code == 401:
+            detalle = cuerpo.get("error_description") or "Token inválido o expirado"
+            raise SireAuthException(f"SUNAT rechazó la autenticación: {detalle}")
+
+        if response.status_code == 422:
+            raise SunatValidationException(
+                message=cuerpo.get("msg") or "SUNAT rechazó la petición por validación",
+                errors=cuerpo.get("errors") or [],
+                cod=cuerpo.get("cod"),
+                response_data=cuerpo,
+            )
+
+        mensaje = (
+            cuerpo.get("msg")
+            or cuerpo.get("message")
+            or (response.text[:300] if response.text else "")
+            or f"Error HTTP {response.status_code}"
+        )
+        raise SireApiException(mensaje, status_code=response.status_code, response_data=cuerpo)
+
     async def _make_request(
         self,
         method: str,
@@ -178,409 +217,693 @@ class SunatApiClient:
         data: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
         token: Optional[str] = None,
-        retry_count: int = 0
+        retry_count: int = 0,
     ) -> httpx.Response:
         """
-        Realizar request HTTP con reintentos
-        
-        Args:
-            method: Método HTTP (GET, POST, etc.)
-            url: URL completa del endpoint
-            headers: Headers adicionales
-            data: Datos del body (para POST/PUT)
-            params: Parámetros de query
-            token: Token de autenticación
-            retry_count: Contador de reintentos
-        
-        Returns:
-            httpx.Response: Respuesta HTTP
-        
-        Raises:
-            SireApiException: Error de API
-            SireTimeoutException: Timeout
+        Realizar una petición HTTP, con reintentos ante fallos de red.
+
+        Los errores que devuelve SUNAT (4xx/5xx) no se reintentan: se traducen a
+        excepción. Solo se reintentan timeouts y errores de conexión.
         """
-        # Construir headers
         request_headers = self._build_headers(token, headers)
-        
-        # Preparar datos
-        json_data = json.dumps(data, default=str) if data else None
-        
+
         try:
             response = await self.client.request(
                 method=method,
                 url=url,
                 headers=request_headers,
                 json=data,
-                params=params
+                params=params,
             )
-            
-            # Verificar si es un error de autenticación
-            if response.status_code == 401:
-                raise SireAuthException("Token de autenticación inválido o expirado")
-            
-            # Verificar otros errores HTTP
+
             if response.status_code >= 400:
-                error_msg = f"Error HTTP {response.status_code}"
-                try:
-                    error_data = response.json()
-                    error_msg = error_data.get("message", error_msg)
-                except:
-                    error_msg = response.text or error_msg
-                
-                raise SireApiException(f"{error_msg}", status_code=response.status_code)
-            
+                self._levantar_error_sunat(response)
+
             return response
-            
+
         except httpx.TimeoutException:
             if retry_count < self.max_retries:
                 await asyncio.sleep(self.retry_delay * (retry_count + 1))
-                return await self._make_request(method, url, headers, data, params, token, retry_count + 1)
-            else:
-                raise SireTimeoutException(f"Timeout después de {self.max_retries} reintentos")
-        
+                return await self._make_request(
+                    method, url, headers, data, params, token, retry_count + 1
+                )
+            raise SireTimeoutException(
+                f"SUNAT no respondió tras {self.max_retries} reintentos: {method} {url}"
+            )
+
         except httpx.RequestError as e:
             if retry_count < self.max_retries:
                 await asyncio.sleep(self.retry_delay * (retry_count + 1))
-                return await self._make_request(method, url, headers, data, params, token, retry_count + 1)
-            else:
-                raise SireApiException(f"Error de conexión después de {self.max_retries} reintentos: {e}")
-    
+                return await self._make_request(
+                    method, url, headers, data, params, token, retry_count + 1
+                )
+            raise SireApiException(
+                f"Error de conexión con SUNAT tras {self.max_retries} reintentos: {e}"
+            )
+
+    # ==================================================================
+    # AUTENTICACIÓN (5.1)
+    # ==================================================================
+
     async def authenticate(self, credentials: SireCredentials) -> SireTokenData:
         """
-        Autenticar con SUNAT y obtener token JWT
-        
-        Args:
-            credentials: Credenciales SIRE
-        
-        Returns:
-            SireTokenData: Datos del token
-        
-        Raises:
-            SireAuthException: Error de autenticación
+        5.1 Obtener el token Bearer.
+
+        El `username` es RUC y usuario SOL concatenados sin separador, tal como
+        exige el manual.
         """
         auth_data = {
             "grant_type": "password",
-            "scope": "https://api-sire.sunat.gob.pe",
+            "scope": ep.API_SIRE.rsplit("/v1", 1)[0],
             "client_id": credentials.client_id,
             "client_secret": credentials.client_secret,
-            "username": f"{credentials.ruc}{credentials.sunat_usuario}",  # ✅ FORMATO CORRECTO: RUC+Usuario SIN ESPACIOS
-            "password": credentials.sunat_clave
+            "username": f"{credentials.ruc}{credentials.sunat_usuario}",
+            "password": credentials.sunat_clave,
         }
-        
-        # Headers específicos para autenticación
+
         auth_headers = {
             "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json"
+            "Accept": "application/json",
         }
-        
+
         try:
-            # URL específica con client_id (formato confirmado que funciona)
-            auth_url = f"{self.auth_url}/{credentials.client_id}/oauth2/token/"
-            
             response = await self.client.request(
                 method="POST",
-                url=auth_url,
+                url=ep.token(credentials.client_id),
                 headers=auth_headers,
-                data=auth_data  # Usar data en lugar de json para form-urlencoded
+                data=auth_data,  # form-urlencoded, no JSON
             )
-            
-            # Verificar si es un error de autenticación
-            if response.status_code == 401:
-                error_details = "Credenciales inválidas"
-                try:
-                    error_data = response.json()
-                    error_details = error_data.get("error_description", error_details)
-                except:
-                    pass
-                raise SireAuthException(f"Token de autenticación inválido o expirado: {error_details}")
-            
-            # Verificar otros errores HTTP
-            if response.status_code >= 400:
-                error_msg = f"Error HTTP {response.status_code}"
-                try:
-                    error_data = response.json()
-                    error_msg = error_data.get("error_description", error_msg)
-                except:
-                    error_msg = response.text or error_msg
-                raise SireAuthException(f"Error en autenticación: {error_msg}")
-            
-            token_data = response.json()
-            
-            return SireTokenData(
-                access_token=token_data["access_token"],
-                token_type=token_data.get("token_type", "Bearer"),
-                expires_in=token_data["expires_in"],
-                refresh_token=token_data.get("refresh_token"),
-                scope=token_data.get("scope")
-            )
-            
-        except Exception as e:
-            raise SireAuthException(f"Error de autenticación: {e}")
-    
-    async def refresh_token(self, refresh_token: str, client_id: str, client_secret: str) -> SireTokenData:
-        """
-        Renovar token JWT
-        
-        Args:
-            refresh_token: Token de renovación
-            client_id: Client ID
-            client_secret: Client Secret
-        
-        Returns:
-            SireTokenData: Nuevos datos del token
-        """
+        except httpx.RequestError as e:
+            raise SireAuthException(f"No se pudo contactar con el servicio de seguridad: {e}")
+
+        if response.status_code >= 400:
+            detalle = f"HTTP {response.status_code}"
+            try:
+                detalle = response.json().get("error_description", detalle)
+            except Exception:
+                detalle = response.text[:200] or detalle
+            raise SireAuthException(f"SUNAT rechazó las credenciales: {detalle}")
+
+        token_data = response.json()
+
+        return SireTokenData(
+            access_token=token_data["access_token"],
+            token_type=token_data.get("token_type", "Bearer"),
+            expires_in=token_data["expires_in"],
+            refresh_token=token_data.get("refresh_token"),
+            scope=token_data.get("scope"),
+        )
+
+    async def refresh_token(
+        self, refresh_token: str, client_id: str, client_secret: str
+    ) -> SireTokenData:
+        """Renovar el token a partir del refresh_token."""
         refresh_data = {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
             "client_id": client_id,
-            "client_secret": client_secret
+            "client_secret": client_secret,
         }
-        
+
         try:
-            response = await self._make_request(
+            response = await self.client.request(
                 method="POST",
-                url=f"{self.auth_url}/oauth2/token",
-                data=refresh_data
+                url=ep.token(client_id),
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+                data=refresh_data,
             )
-            
+            if response.status_code >= 400:
+                self._levantar_error_sunat(response)
+
             token_data = response.json()
-            
+
             return SireTokenData(
                 access_token=token_data["access_token"],
                 token_type=token_data.get("token_type", "Bearer"),
                 expires_in=token_data["expires_in"],
                 refresh_token=token_data.get("refresh_token", refresh_token),
-                scope=token_data.get("scope")
+                scope=token_data.get("scope"),
             )
-            
+        except (SireAuthException, SireApiException):
+            raise
         except Exception as e:
             raise SireAuthException(f"Error renovando token: {e}")
-    
-    async def get_with_auth(self, endpoint: str, token: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        GET request con autenticación JWT
-        
-        Args:
-            endpoint: Endpoint relativo (ej: /rvie/propuesta)
-            token: Token de acceso
-            params: Parámetros de query
-        
-        Returns:
-            Dict con respuesta JSON
-        """
-        url = f"{self.base_url}{endpoint}"
+
+    # ==================================================================
+    # AYUDANTES CON URL ABSOLUTA
+    # ==================================================================
+
+    async def get_json(
+        self, url: str, token: str, params: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """GET autenticado que devuelve JSON."""
         response = await self._make_request("GET", url, token=token, params=params)
         return response.json()
-    
-    async def post_with_auth(
-        self, 
-        endpoint: str, 
-        token: str, 
+
+    async def post_json(
+        self,
+        url: str,
+        token: str,
         data: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None
+        params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        POST request con autenticación JWT
-        
-        Args:
-            endpoint: Endpoint relativo
-            token: Token de acceso
-            data: Datos del body
-            params: Parámetros de query
-        
-        Returns:
-            Dict con respuesta JSON
-        """
-        url = f"{self.base_url}{endpoint}"
+        """POST autenticado que devuelve JSON. Tolera respuestas con cuerpo vacío."""
         response = await self._make_request("POST", url, token=token, data=data, params=params)
-        return response.json()
-    
-    async def put_with_auth(
-        self, 
-        endpoint: str, 
-        token: str, 
-        data: Optional[Dict[str, Any]] = None
+        return self._json_o_vacio(response)
+
+    async def put_json(
+        self,
+        url: str,
+        token: str,
+        data: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        PUT request con autenticación JWT
-        """
-        url = f"{self.base_url}{endpoint}"
-        response = await self._make_request("PUT", url, token=token, data=data)
-        return response.json()
-    
-    async def delete_with_auth(self, endpoint: str, token: str) -> Dict[str, Any]:
-        """
-        DELETE request con autenticación JWT
-        """
-        url = f"{self.base_url}{endpoint}"
-        response = await self._make_request("DELETE", url, token=token)
-        return response.json()
-    
-    async def download_file(self, endpoint: str, token: str) -> bytes:
-        """
-        Descargar archivo con autenticación
-        
-        Args:
-            endpoint: Endpoint de descarga
-            token: Token de acceso
-        
-        Returns:
-            bytes: Contenido del archivo
-        """
-        url = f"{self.base_url}{endpoint}"
-        headers = self._build_headers(token)
-        headers["Accept"] = "*/*"  # Aceptar cualquier tipo de archivo
-        
-        response = await self._make_request("GET", url, headers=headers)
+        """PUT autenticado que devuelve JSON."""
+        response = await self._make_request("PUT", url, token=token, data=data, params=params)
+        return self._json_o_vacio(response)
+
+    async def delete_json(
+        self,
+        url: str,
+        token: str,
+        data: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """DELETE autenticado que devuelve JSON."""
+        response = await self._make_request("DELETE", url, token=token, data=data, params=params)
+        return self._json_o_vacio(response)
+
+    async def get_bytes(
+        self, url: str, token: str, params: Optional[Dict[str, Any]] = None
+    ) -> bytes:
+        """GET autenticado que devuelve el cuerpo en crudo (descargas directas)."""
+        response = await self._make_request(
+            "GET", url, headers={"Accept": "*/*"}, token=token, params=params
+        )
         return response.content
-    
+
+    @staticmethod
+    def _json_o_vacio(response: httpx.Response) -> Dict[str, Any]:
+        """
+        Varios servicios (5.4, 5.11, 5.17…) responden 200 sin cuerpo.
+        Devolver `{}` evita que un `json()` reviente en el camino feliz.
+        """
+        if not response.content:
+            return {}
+        try:
+            return response.json()
+        except Exception:
+            return {"respuesta": response.text}
+
     async def health_check(self) -> bool:
         """
-        Verificar estado de la API SUNAT
-        
-        Returns:
-            bool: True si la API está disponible
-            
-        Nota: SUNAT no tiene endpoint de health público, 
-        verificamos con el endpoint de autenticación
+        Comprobar que la API de SUNAT responde.
+
+        SUNAT no publica un endpoint de salud: un 401/403 ya demuestra que el
+        servidor está vivo y contestando.
         """
         try:
-            # En lugar de /health, verificamos que la URL base responda
-            # Hacemos una llamada mínima que no requiere autenticación
-            response = await self._make_request("GET", f"{self.base_url}")
-            return response.status_code in [200, 401, 403]  # 401/403 indican que el servidor responde
-        except Exception as e:
+            response = await self.client.request("GET", self.base_url)
+            return response.status_code in (200, 401, 403)
+        except Exception:
             return False
 
-    # =======================================
-    # MÉTODOS ESPECÍFICOS PARA RCE
-    # =======================================
-    
-    async def rce_propuesta_generar(self, token: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    # ==================================================================
+    # OPERACIONES CON TICKET (5.31 / 5.32)
+    # ==================================================================
+
+    async def consultar_ticket(
+        self,
+        token: str,
+        num_ticket: str,
+        per_ini: str,
+        per_fin: Optional[str] = None,
+        cod_libro: str = CodLibro.RCE,
+        page: int = 1,
+        per_page: int = 20,
+    ) -> Dict[str, Any]:
         """
-        Generar propuesta RCE
+        5.31 Consultar el estado de un ticket.
+
+        Devuelve el registro concreto de `num_ticket`, o `{}` si SUNAT todavía no
+        lo lista.
         """
-        return await self.post_with_auth(self.endpoints["rce_propuesta"], token, data)
-    
-    async def rce_propuesta_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        datos = await self.get_json(
+            ep.consultar_estado_tickets(),
+            token,
+            params={
+                "perIni": per_ini,
+                "perFin": per_fin or per_ini,
+                "page": page,
+                "perPage": per_page,
+                "numTicket": num_ticket,
+                "codLibro": cod_libro,
+                "codOrigenEnvio": CodOrigenEnvio.SERVICIO_API,
+            },
+        )
+
+        for registro in datos.get("registros", []):
+            if str(registro.get("numTicket")) == str(num_ticket):
+                return registro
+
+        return {}
+
+    async def descargar_archivo_reporte(
+        self,
+        token: str,
+        nom_archivo: str,
+        cod_tipo_archivo: str,
+        per_tributario: Optional[str] = None,
+        cod_proceso: Optional[str] = None,
+        num_ticket: Optional[str] = None,
+        cod_libro: str = CodLibro.RCE,
+    ) -> bytes:
         """
-        Consultar propuesta RCE
+        5.32 Descargar el archivo generado por un ticket.
+
+        El manual solo documenta `nomArchivoReporte` y `codTipoArchivoReporte`,
+        pero en la práctica SUNAT necesita además el periodo, el proceso, el
+        ticket y el libro; sin ellos responde con un archivo vacío.
         """
-        return await self.get_with_auth(self.endpoints["rce_propuesta"], token, params)
-    
-    async def rce_propuesta_actualizar(self, token: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "nomArchivoReporte": nom_archivo,
+            "codTipoArchivoReporte": cod_tipo_archivo,
+            "codLibro": cod_libro,
+        }
+        if per_tributario:
+            params["perTributario"] = per_tributario
+        if cod_proceso:
+            params["codProceso"] = cod_proceso
+        if num_ticket:
+            params["numTicket"] = num_ticket
+
+        return await self.get_bytes(ep.descargar_archivo_reporte(), token, params=params)
+
+    @staticmethod
+    def _extraer_archivos(nombre: str, contenido: bytes) -> List[ArchivoTicket]:
         """
-        Actualizar propuesta RCE
+        Descomprimir la descarga.
+
+        SUNAT entrega los reportes zipeados (y, cuando son grandes, partidos en
+        varios archivos dentro del mismo zip). Si lo que llega no es un zip se
+        devuelve tal cual, que es lo que ocurre con algunos TXT pequeños.
         """
-        return await self.put_with_auth(self.endpoints["rce_propuesta"], token, data)
-    
-    async def rce_propuesta_eliminar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        if not contenido:
+            return []
+
+        if not contenido[:2] == b"PK":
+            return [ArchivoTicket(nombre=nombre, contenido=contenido)]
+
+        archivos: List[ArchivoTicket] = []
+        try:
+            with zipfile.ZipFile(io.BytesIO(contenido)) as z:
+                for interno in z.namelist():
+                    if interno.endswith("/"):
+                        continue
+                    archivos.append(ArchivoTicket(nombre=interno, contenido=z.read(interno)))
+        except zipfile.BadZipFile:
+            logger.warning(f"[SUNAT] El archivo {nombre} parecía un zip pero no se pudo abrir")
+            return [ArchivoTicket(nombre=nombre, contenido=contenido)]
+
+        return archivos
+
+    async def ejecutar_operacion_con_ticket(
+        self,
+        token: str,
+        url: str,
+        per_tributario: str,
+        *,
+        method: str = "GET",
+        params: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
+        cod_libro: str = CodLibro.RCE,
+        descargar: bool = True,
+        ticket_opcional: bool = False,
+        espera_inicial: float = 2.0,
+        espera_maxima: float = 15.0,
+        timeout_total: float = 300.0,
+    ) -> ResultadoTicket:
         """
-        Eliminar propuesta RCE
+        Ejecutar una operación asíncrona de SUNAT de principio a fin.
+
+        Es el patrón que el manual repite en todos los servicios de
+        importar/exportar/descargar: lanzar la petición, quedarse con el
+        `numTicket`, sondear 5.31 hasta que el proceso termine, descargar con
+        5.32 y descomprimir el resultado.
+
+        Args:
+            url: endpoint de `sunat_endpoints` que devuelve `numTicket`.
+            per_tributario: periodo `yyyymm`, necesario para consultar el ticket.
+            descargar: si es False se para al terminar el proceso, sin bajar el
+                archivo (útil cuando solo interesa saber si SUNAT aceptó).
+            espera_inicial / espera_maxima: sondeo con espera creciente, para no
+                castigar a SUNAT en procesos largos.
+            timeout_total: tiempo máximo total de sondeo, en segundos.
+
+        Raises:
+            SireApiException: si SUNAT no devuelve ticket, si el proceso acaba en
+                error o si se agota el tiempo de sondeo.
+            SunatValidationException: si SUNAT rechaza la petición con un 422.
         """
-        return await self.delete_with_auth(f"{self.endpoints['rce_propuesta']}?{self._build_query_string(params)}", token)
-    
-    async def rce_comprobante_eliminar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        # --- Paso 1: lanzar la operación y quedarse con el ticket ---
+        respuesta = await self._make_request(
+            method, url, token=token, params=params, data=data
+        )
+        cuerpo = self._json_o_vacio(respuesta)
+
+        num_ticket = str(cuerpo.get("numTicket") or "").strip()
+        if not num_ticket:
+            if ticket_opcional:
+                # En Ventas, 5.9 y 5.15 responden sin ticket cuando el proceso
+                # terminó de forma síncrona. No hay nada que sondear.
+                logger.info(
+                    f"[SUNAT] {url} terminó sin ticket: proceso síncrono completado"
+                )
+                return ResultadoTicket(
+                    num_ticket="",
+                    cod_estado=EstadoTicket.TERMINADO,
+                    descripcion="Completado sin ticket",
+                )
+            raise SireApiException(
+                f"SUNAT no devolvió numTicket para la operación {url}. Respuesta: {cuerpo}"
+            )
+
+        logger.info(f"[SUNAT] Ticket {num_ticket} generado para el periodo {per_tributario}")
+
+        # --- Paso 2: sondear 5.31 hasta que el proceso termine ---
+        espera = espera_inicial
+        transcurrido = 0.0
+        registro: Dict[str, Any] = {}
+        cod_estado = EstadoTicket.EN_PROCESO
+
+        while transcurrido < timeout_total:
+            await asyncio.sleep(espera)
+            transcurrido += espera
+
+            registro = await self.consultar_ticket(
+                token, num_ticket, per_ini=per_tributario, cod_libro=cod_libro
+            )
+            cod_estado = str(registro.get("codEstadoProceso") or "").strip() or cod_estado
+
+            if cod_estado in ESTADOS_TERMINALES:
+                break
+
+            espera = min(espera * 1.5, espera_maxima)
+
+        descripcion = registro.get("desEstadoProceso") or DESCRIPCION_ESTADO.get(cod_estado, "")
+
+        if cod_estado not in ESTADOS_TERMINALES:
+            raise SireApiException(
+                f"El ticket {num_ticket} seguía en estado '{descripcion or cod_estado}' "
+                f"después de {int(transcurrido)} s. Consúltalo más tarde con el servicio 5.31."
+            )
+
+        if cod_estado in ESTADOS_FALLIDOS:
+            detalle = registro.get("detalleTicket") or {}
+            raise SireApiException(
+                f"SUNAT terminó el ticket {num_ticket} con estado "
+                f"'{descripcion or cod_estado}'. Detalle: {detalle}",
+                status_code=200,
+                response_data=registro,
+            )
+
+        resultado = ResultadoTicket(
+            num_ticket=num_ticket,
+            cod_estado=cod_estado,
+            descripcion=descripcion,
+            registro=registro,
+        )
+
+        if not descargar:
+            return resultado
+
+        # --- Paso 3: descargar con 5.32 y descomprimir ---
+        for archivo in registro.get("archivoReporte", []) or []:
+            # SUNAT escribe esta clave sin la 'r': 'codTipoAchivoReporte'.
+            cod_tipo = archivo.get("codTipoAchivoReporte") or archivo.get("codTipoArchivoReporte")
+            nombre = archivo.get("nomArchivoReporte")
+            if not nombre:
+                continue
+
+            contenido = await self.descargar_archivo_reporte(
+                token,
+                nom_archivo=nombre,
+                cod_tipo_archivo=cod_tipo,
+                per_tributario=per_tributario,
+                cod_proceso=registro.get("codProceso"),
+                num_ticket=num_ticket,
+                cod_libro=cod_libro,
+            )
+            resultado.archivos.extend(self._extraer_archivos(nombre, contenido))
+
+        return resultado
+
+    # ==================================================================
+    # SERVICIOS RCE
+    # ==================================================================
+
+    async def periodos_habilitados(
+        self, token: str, cod_libro: str = CodLibro.RCE
+    ) -> Dict[str, Any]:
+        """5.33 Periodos habilitados para el contribuyente."""
+        return await self.get_json(ep.periodos_habilitados(cod_libro), token)
+
+    async def descargar_propuesta(
+        self,
+        token: str,
+        per_tributario: str,
+        cod_tipo_archivo: str = CodTipoArchivo.TXT,
+        filtros: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> ResultadoTicket:
+        """5.34 Descargar la propuesta del periodo. Operación con ticket."""
+        params: Dict[str, Any] = {
+            "codTipoArchivo": cod_tipo_archivo,
+            "codOrigenEnvio": CodOrigenEnvio.SERVICIO_API,
+        }
+        if filtros:
+            params.update({k: v for k, v in filtros.items() if v is not None})
+
+        return await self.ejecutar_operacion_con_ticket(
+            token, ep.descargar_propuesta(per_tributario), per_tributario,
+            method="GET", params=params, **kwargs,
+        )
+
+    async def descargar_resumen(
+        self,
+        token: str,
+        per_tributario: str,
+        cod_tipo_resumen: str = CodTipoResumen.PROPUESTA,
+        cod_tipo_archivo: str = CodTipoArchivo.TXT,
+        cod_libro: str = CodLibro.RCE,
+    ) -> str:
         """
-        Eliminar comprobante RCE
+        5.35 Descargar un resumen.
+
+        A diferencia del resto de descargas, este servicio responde con el
+        contenido directamente, sin pasar por ticket.
         """
-        return await self.delete_with_auth(f"{self.endpoints['rce_comprobante_eliminar']}?{self._build_query_string(params)}", token)
-    
-    async def rce_guia_insertar(self, token: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        contenido = await self.get_bytes(
+            ep.descargar_resumen(per_tributario, cod_tipo_resumen, cod_tipo_archivo),
+            token,
+            params={"codLibro": cod_libro},
+        )
+        archivos = self._extraer_archivos(f"resumen_{per_tributario}", contenido)
+        return "\n".join(a.texto for a in archivos)
+
+    async def aceptar_propuesta(
+        self, token: str, per_tributario: str, cod_libro: str = CodLibro.RCE, **kwargs: Any
+    ) -> ResultadoTicket:
         """
-        Insertar guía de remisión RCE
+        5.2 Aceptar la propuesta de SUNAT: el libro pasa a preliminar.
+
+        No lleva cuerpo. Devuelve `numTicket`; el resultado se recoge por 5.31.
         """
-        return await self.post_with_auth(self.endpoints["rce_guia_insertar"], token, data)
-    
-    async def rce_guia_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        return await self.ejecutar_operacion_con_ticket(
+            token, ep.aceptar_propuesta(per_tributario), per_tributario,
+            method="POST", cod_libro=cod_libro, descargar=False, **kwargs,
+        )
+
+    async def registrar_preliminar(
+        self, token: str, per_tributario: str, cod_libro: str = CodLibro.RCE, **kwargs: Any
+    ) -> ResultadoTicket:
+        """5.4 Registrar el preliminar. Paso final antes de la generación."""
+        return await self.ejecutar_operacion_con_ticket(
+            token, ep.registrar_preliminar(per_tributario), per_tributario,
+            method="POST", cod_libro=cod_libro, descargar=False, **kwargs,
+        )
+
+    async def eliminar_preliminar(
+        self, token: str, per_tributario: str, ind_eliminar: str
+    ) -> Dict[str, Any]:
+        """5.17 Eliminar el preliminar. Marcha atrás del 5.4. Ver `IndEliminarPreliminar`."""
+        return await self.put_json(
+            ep.eliminar_preliminar(per_tributario, ind_eliminar), token
+        )
+
+    # ==================================================================
+    # CARGA DE ARCHIVOS (servicios TUS: 5.3, 5.5–5.9, 5.18…)
+    # ==================================================================
+
+    @staticmethod
+    def metadata_carga(
+        ruc: str,
+        per_tributario: str,
+        cod_proceso: str,
+        nombre_archivo: str,
+        cod_libro: str = CodLibro.RCE,
+    ) -> Dict[str, str]:
         """
-        Consultar guía de remisión RCE
+        Metadata TUS común a todos los servicios de carga.
+
+        El manual la repite idéntica en los 18 servicios de importación: lo
+        único que distingue una operación de otra es `codProceso` y el endpoint
+        de destino.
         """
-        return await self.get_with_auth(self.endpoints["rce_guia_consultar"], token, params)
-    
-    async def rce_guia_actualizar(self, token: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "filename": nombre_archivo,
+            "filetype": "application/zip",
+            "numRuc": ruc,
+            "perTributario": per_tributario,
+            "codOrigenEnvio": CodOrigenEnvio.SERVICIO_API,
+            "codProceso": cod_proceso,
+            "codTipoCorrelativo": "01",
+            "nomArchivoImportacion": nombre_archivo,
+            "codLibro": cod_libro,
+        }
+
+    async def subir_archivo(
+        self,
+        token: str,
+        url: str,
+        *,
+        ruc: str,
+        per_tributario: str,
+        cod_proceso: str,
+        nombre_archivo: str,
+        contenido: bytes,
+        comprimir: bool = True,
+        cod_libro: str = CodLibro.RCE,
+    ) -> ResultadoCarga:
         """
-        Actualizar guía de remisión RCE
+        Subir un archivo a SUNAT por tus.io y devolver su ticket.
+
+        Args:
+            url: destino de `sunat_endpoints` (UPLOAD_PROPUESTA, UPLOAD_PRELIMINAR
+                o UPLOAD_AJUSTES_POSTERIORES).
+            cod_proceso: lo que decide la operación. Ver `CodProceso`.
+            contenido: el `.txt` en bytes.
+            comprimir: SUNAT solo acepta el txt zipeado; ponerlo a False sirve
+                para cuando el llamante ya trae el zip hecho.
+
+        Raises:
+            SunatValidationException: si SUNAT rechaza el archivo con un 422,
+                con una fila por cada error encontrado.
         """
-        return await self.put_with_auth(self.endpoints["rce_guia_actualizar"], token, data)
-    
-    async def rce_guia_eliminar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        # Comprobar antes de comprimir: un .txt vacío produce un zip que no lo
+        # está, y SUNAT lo aceptaría como si llevara datos.
+        if not contenido:
+            raise SireApiException(
+                f"El archivo {nombre_archivo} está vacío; no se envía a SUNAT"
+            )
+
+        if comprimir:
+            nombre_txt = nombre_archivo
+            if nombre_txt.lower().endswith(".zip"):
+                nombre_txt = nombre_txt[:-4] + ".txt"
+            elif not nombre_txt.lower().endswith(".txt"):
+                nombre_txt = nombre_txt + ".txt"
+
+            contenido = comprimir_txt(nombre_txt, contenido)
+            nombre_archivo = nombre_txt[:-4] + ".zip"
+
+        uploader = TusUploader(self.client, self._levantar_error_sunat)
+
+        return await uploader.subir(
+            url,
+            token,
+            contenido,
+            self.metadata_carga(ruc, per_tributario, cod_proceso, nombre_archivo, cod_libro),
+        )
+
+    # ==================================================================
+    # SERVICIOS RVIE (Ventas). Manual v30.
+    # ==================================================================
+
+    async def rvie_aceptar_propuesta(
+        self, token: str, per_tributario: str, **kwargs: Any
+    ) -> ResultadoTicket:
+        """5.8 Aceptar la propuesta del RVIE. El libro pasa a preliminar."""
+        return await self.ejecutar_operacion_con_ticket(
+            token, ep_rvie.aceptar_propuesta(per_tributario), per_tributario,
+            method="POST", cod_libro=CodLibro.RVIE, descargar=False, **kwargs,
+        )
+
+    async def rvie_registrar_preliminar(
+        self, token: str, per_tributario: str, **kwargs: Any
+    ) -> ResultadoTicket:
         """
-        Eliminar guía de remisión RCE
+        5.9 Registrar el preliminar del RVIE.
+
+        Puede responder sin ticket: en ese caso el proceso ya terminó bien.
         """
-        return await self.delete_with_auth(f"{self.endpoints['rce_guia_eliminar']}?{self._build_query_string(params)}", token)
-    
-    async def rce_proceso_enviar(self, token: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        return await self.ejecutar_operacion_con_ticket(
+            token, ep_rvie.registrar_preliminar(per_tributario), per_tributario,
+            method="POST", cod_libro=CodLibro.RVIE, descargar=False,
+            ticket_opcional=True, **kwargs,
+        )
+
+    async def rvie_eliminar_reemplazo(
+        self, token: str, per_tributario: str, **kwargs: Any
+    ) -> ResultadoTicket:
+        """5.15 Eliminar el preliminar no registrado y los datos del reemplazo."""
+        return await self.ejecutar_operacion_con_ticket(
+            token, ep_rvie.eliminar_reemplazo(per_tributario), per_tributario,
+            method="PUT", params={"codLibro": CodLibro.RVIE},
+            cod_libro=CodLibro.RVIE, descargar=False, ticket_opcional=True, **kwargs,
+        )
+
+    async def rvie_descargar_propuesta(
+        self,
+        token: str,
+        per_tributario: str,
+        cod_tipo_archivo: str = CodTipoArchivoRvie.TXT,
+        filtros: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> ResultadoTicket:
         """
-        Enviar proceso RCE a SUNAT
+        5.18 Descargar la propuesta de ventas.
+
+        Ojo con `cod_tipo_archivo`: los códigos de Ventas no son los de Compras.
         """
-        return await self.post_with_auth(self.endpoints["rce_proceso_enviar"], token, data)
-    
-    async def rce_proceso_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Consultar estado del proceso RCE
-        """
-        return await self.get_with_auth(self.endpoints["rce_proceso_consultar"], token, params)
-    
-    async def rce_proceso_cancelar(self, token: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Cancelar proceso RCE
-        """
-        return await self.post_with_auth(self.endpoints["rce_proceso_cancelar"], token, data)
-    
-    async def rce_contribuyente_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Consultar datos del contribuyente RCE
-        """
-        return await self.get_with_auth(self.endpoints["rce_contribuyente_consultar"], token, params)
-    
-    async def rce_linea_detalle_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Consultar líneas de detalle RCE
-        """
-        return await self.get_with_auth(self.endpoints["rce_linea_detalle_consultar"], token, params)
-    
-    async def rce_comprobante_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Consultar comprobantes RCE
-        """
-        return await self.get_with_auth(self.endpoints["rce_comprobante_consultar"], token, params)
-    
-    async def rce_comprobante_resumen_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Consultar resumen de comprobantes RCE
-        """
-        return await self.get_with_auth(self.endpoints["rce_comprobante_resumen_consultar"], token, params)
-    
-    async def rce_descarga_masiva_solicitar(self, token: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Solicitar descarga masiva RCE
-        """
-        return await self.post_with_auth(self.endpoints["rce_descarga_masiva"], token, data)
-    
-    async def rce_descarga_masiva_consultar(self, token: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Consultar estado de descarga masiva RCE
-        """
-        return await self.get_with_auth(self.endpoints["rce_descarga_masiva"], token, params)
-    
-    async def rce_ticket_consultar(self, token: str, ticket_id: str) -> Dict[str, Any]:
-        """
-        Consultar estado de ticket RCE
-        """
-        params = {"ticket": ticket_id}
-        return await self.get_with_auth(self.endpoints["rce_ticket_consultar"], token, params)
-    
-    async def rce_archivo_descargar(self, token: str, params: Dict[str, Any]) -> bytes:
-        """
-        Descargar archivo RCE
-        """
-        endpoint = f"{self.endpoints['rce_descarga_archivo']}?{self._build_query_string(params)}"
-        return await self.download_file(endpoint, token)
-    
-    def _build_query_string(self, params: Dict[str, Any]) -> str:
-        """
-        Construir query string para parámetros
-        """
-        from urllib.parse import urlencode
-        return urlencode(params)
+        params: Dict[str, Any] = {"codTipoArchivo": cod_tipo_archivo}
+        if filtros:
+            params.update({k: v for k, v in filtros.items() if v is not None})
+
+        return await self.ejecutar_operacion_con_ticket(
+            token, ep_rvie.descargar_propuesta(per_tributario), per_tributario,
+            method="GET", params=params, cod_libro=CodLibro.RVIE, **kwargs,
+        )
+
+    async def rvie_periodos_habilitados(self, token: str) -> Dict[str, Any]:
+        """5.2 Periodos habilitados para ventas. Mismo servicio que en Compras, otro libro."""
+        return await self.get_json(ep.periodos_habilitados(CodLibro.RVIE), token)
+
+    async def rvie_descargar_resumen(
+        self,
+        token: str,
+        per_tributario: str,
+        cod_tipo_resumen: str = CodTipoResumen.PROPUESTA,
+        cod_tipo_archivo: str = CodTipoArchivoRvie.TXT,
+    ) -> str:
+        """5.20 Descargar resumen de ventas. Descarga directa, sin ticket."""
+        contenido = await self.get_bytes(
+            ep.descargar_resumen(per_tributario, cod_tipo_resumen, cod_tipo_archivo),
+            token,
+            params={"codLibro": CodLibro.RVIE},
+        )
+        archivos = self._extraer_archivos(f"resumen_rvie_{per_tributario}", contenido)
+        return "\n".join(a.texto for a in archivos)

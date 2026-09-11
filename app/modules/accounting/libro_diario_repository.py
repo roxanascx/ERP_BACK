@@ -1,6 +1,7 @@
 """
 Repository para operaciones de Libro Diario con MongoDB
 """
+import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from bson import ObjectId
@@ -12,6 +13,8 @@ from app.modules.accounting.libro_diario_models import (
     AsientoContableModel, 
     LibroDiarioStats
 )
+
+logger = logging.getLogger(__name__)
 
 
 class LibroDiarioRepository:
@@ -137,6 +140,7 @@ class LibroDiarioRepository:
                 # Los totales ya están almacenados en el documento, usar esos valores
                 libro["totalDebe"] = libro_doc.get("totalDebe", 0.0)
                 libro["totalHaber"] = libro_doc.get("totalHaber", 0.0)
+                libro["totalAsientos"] = await self.contar_asientos(str(libro["id"]))
                 
                 libros.append(libro)
             
@@ -144,6 +148,27 @@ class LibroDiarioRepository:
             
         except Exception as e:
             raise Exception(f"Error al listar libros diario: {str(e)}")
+
+    async def contar_asientos(self, libro_id: str) -> int:
+        """
+        Cuántos asientos tiene un libro.
+
+        La colección guarda **una fila por línea** del asiento, no un documento
+        por asiento, así que un count_documents devolvería el número de líneas.
+        Lo que cuenta para el usuario es el asiento, de ahí el agrupado por
+        numeroAsiento.
+        """
+        try:
+            grupos = await self.asiento_model.collection.aggregate([
+                {"$match": {"libroId": libro_id}},
+                {"$group": {"_id": "$numeroAsiento"}},
+                {"$count": "total"},
+            ]).to_list(length=1)
+            return grupos[0]["total"] if grupos else 0
+        except Exception:
+            # Un conteo es informativo: si falla, el listado debe seguir saliendo.
+            logger.exception(f"No se pudo contar los asientos del libro {libro_id}")
+            return 0
     
     # =====================================
     # OPERACIONES DE ASIENTOS CONTABLES

@@ -52,7 +52,7 @@ class RceProveedor(BaseModel):
     razon_social: str = Field(..., description="Razón social o apellidos y nombres")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "tipo_documento": "6",
                 "numero_documento": "20123456789",
@@ -133,7 +133,7 @@ class RceComprobante(BaseModel):
             date: lambda v: v.isoformat()
         }
         
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "ruc_adquiriente": "20612969125",
                 "periodo": "202507",

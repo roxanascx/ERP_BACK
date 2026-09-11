@@ -131,6 +131,19 @@ class PLELineaCompras:
         return "|".join(campos) + "|"
 
 
+def _codigo(valor) -> str:
+    """
+    Codigo SUNAT de un campo que puede llegar como texto o como Enum.
+
+    El esquema los declara `str`, pero hay rutas que todavia construyen el
+    registro con los Enum de compras_schemas. La version anterior hacia `.value`
+    a secas y fallaba con AttributeError sobre cualquier registro real.
+    """
+    if valor is None:
+        return ""
+    return str(getattr(valor, "value", valor)).strip()
+
+
 class PLEFormatterCompras:
     """Formateador oficial SUNAT para PLE 080000 - Registro de Compras (32 campos)"""
     
@@ -177,19 +190,19 @@ class PLEFormatterCompras:
         campo_03 = self._formatear_correlativo_asiento(correlativo_asiento or compra.numero_comprobante)
         
         # CAMPO 4: Fecha emisión comprobante
-        campo_04 = self._formatear_fecha(compra.fecha_emision)
+        campo_04 = self._formatear_fecha(compra.fecha_comprobante)
         
         # CAMPO 5: Fecha vencimiento
         campo_05 = self._formatear_fecha(compra.fecha_vencimiento)
         
         # CAMPO 6: Tipo comprobante de pago
-        campo_06 = str(compra.tipo_comprobante.value)
+        campo_06 = _codigo(compra.tipo_comprobante)
         
         # CAMPO 7: Serie del comprobante
         campo_07 = self._formatear_serie_comprobante(compra.serie_comprobante)
         
         # CAMPO 8: Año emisión DUA/DSI (solo para importaciones)
-        campo_08 = ""  # Normalmente vacío, se llena para importaciones
+        campo_08 = str(compra.anio_emision_dua_dsi or "")[:4]
         
         # CAMPO 9: Número del comprobante
         campo_09 = self._formatear_numero_comprobante(compra.numero_comprobante)
@@ -198,7 +211,7 @@ class PLEFormatterCompras:
         campo_10 = self._formatear_numero_final(compra.numero_final_rango)
         
         # CAMPO 11: Tipo documento proveedor
-        campo_11 = str(compra.tipo_documento_proveedor.value)
+        campo_11 = _codigo(compra.tipo_documento_proveedor)
         
         # CAMPO 12: Número documento proveedor
         campo_12 = self._formatear_numero_documento(compra.numero_documento_proveedor)
@@ -237,7 +250,7 @@ class PLEFormatterCompras:
         campo_23 = self._formatear_monto(compra.importe_total)
         
         # CAMPO 24: Código de la moneda
-        campo_24 = self._formatear_codigo_moneda(compra.codigo_moneda)
+        campo_24 = self._formatear_codigo_moneda(compra.moneda)
         
         # CAMPO 25: Tipo de cambio
         campo_25 = self._formatear_tipo_cambio(compra.tipo_cambio)
@@ -264,7 +277,7 @@ class PLEFormatterCompras:
         campo_32 = self._formatear_medio_pago(compra.medio_pago)
         
         # CAMPO 33: Estado de la operación
-        campo_33 = str(compra.estado_operacion.value)
+        campo_33 = _codigo(compra.estado_operacion)
         
         return PLELineaCompras(
             registro_compra=compra,
@@ -317,21 +330,31 @@ class PLEFormatterCompras:
         """Formatear número correlativo del asiento"""
         return f"C{numero.zfill(9)}"
     
-    def _formatear_fecha(self, fecha: Optional[str]) -> str:
-        """Formatear fecha DD/MM/YYYY"""
+    def _formatear_fecha(self, fecha) -> str:
+        """
+        Fecha en DD/MM/YYYY, que es como la quiere SUNAT.
+
+        Acepta objetos `date` además de texto: el esquema declara los campos
+        de fecha como `date`, y la versión anterior solo miraba cadenas. Al
+        pasarle un `date`, el `re.match` lanzaba TypeError, el `except` se lo
+        tragaba y **todas las fechas del archivo salían vacías** sin un solo
+        mensaje de error.
+        """
         if not fecha:
             return ""
-        
+
+        if isinstance(fecha, (datetime, date)):
+            return fecha.strftime("%d/%m/%Y")
+
         try:
-            # Si viene en formato DD/MM/YYYY, mantener
-            if re.match(r'^\d{2}/\d{2}/\d{4}$', fecha):
-                return fecha
-            # Si viene en formato YYYY-MM-DD, convertir
-            elif re.match(r'^\d{4}-\d{2}-\d{2}$', fecha):
-                fecha_obj = datetime.strptime(fecha, "%Y-%m-%d")
-                return fecha_obj.strftime("%d/%m/%Y")
-            else:
-                return ""
+            texto = str(fecha).strip()
+            # Ya viene como la quiere SUNAT
+            if re.match(r'^\d{2}/\d{2}/\d{4}$', texto):
+                return texto
+            # ISO, que es como lo guarda Mongo
+            if re.match(r'^\d{4}-\d{2}-\d{2}', texto):
+                return datetime.strptime(texto[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+            return ""
         except Exception:
             return ""
     

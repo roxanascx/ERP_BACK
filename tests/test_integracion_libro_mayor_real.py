@@ -35,35 +35,75 @@ class TestIntegracionCompleta:
     @classmethod
     def setup_class(cls):
         """Configuración inicial del test"""
-        cls.client = MongoClient('mongodb://localhost:27017/')
-        cls.db = cls.client['erp_db']
-        cls.service = MayorService(cls.db)
-        
-        # Obtener datos reales para testing
+        # El nombre de la base sale de la configuracion, no cableado: estaba
+        # puesto a mano como "erp_db" mientras la real se llama "web-erp", asi
+        # que estos tests leian una base vacia y fallaban con "no hay asientos".
+        from app.config import settings
+
+        # Dos clientes a proposito: `MayorService` declara AsyncIOMotorDatabase y
+        # usa `to_list`, asi que hay que darle Motor. Inyectarle el cliente
+        # sincrono hacia que cada llamada muriera con
+        # "'Cursor' object has no attribute 'to_list'".
+        from motor.motor_asyncio import AsyncIOMotorClient
+
+        cls.client = MongoClient(settings.MONGODB_URL)
+        cls.db = cls.client[settings.DATABASE_NAME]
+
+
+        cls.settings = settings
+
+        # Las consultas de apoyo del propio test si pueden ser sincronas.
         cls.empresas = list(cls.db.companies.find({'activa': True}).limit(1))
         cls.asientos_reales = list(cls.db.asientos_contables.find().limit(10))
         
         print(f"\n🏗️  Configuración de integración:")
-        print(f"   - Base de datos: erp_db")
+        print(f"   - Base de datos: {settings.DATABASE_NAME}")
         print(f"   - Empresas disponibles: {len(cls.empresas)}")
         print(f"   - Asientos contables: {len(cls.asientos_reales)}")
         
-        if cls.empresas:
-            cls.empresa_test = cls.empresas[0]
-            cls.empresa_id = "empresa_demo"  # ID real usado en asientos contables
-            cls.empresa_ruc = cls.empresa_test.get('ruc', '20123456789')
+        # La empresa sale de los asientos que hay en la base, no de una
+        # constante: estaba cableada a "empresa_demo", que ya no existe, asi que
+        # las consultas no devolvian nada y la compatibilidad salia 0%.
+        cls.empresa_id = next(
+            (a['empresaId'] for a in cls.asientos_reales if a.get('empresaId')), None
+        )
+        if not cls.empresa_id:
+            pytest.skip("No hay asientos contables con empresaId para testing")
+
+        cls.empresa_test = next(
+            (e for e in cls.empresas if e.get('ruc') == cls.empresa_id),
+            cls.empresas[0] if cls.empresas else {},
+        )
+
+        if True:
+            cls.empresa_ruc = cls.empresa_test.get('ruc') or cls.empresa_id
             print(f"   - Empresa test: {cls.empresa_ruc}")
             print(f"   - Empresa ID usado: {cls.empresa_id}")
         else:
             pytest.skip("No hay empresas disponibles para testing")
     
+    @classmethod
+    def _servicio(cls) -> MayorService:
+        """
+        Un servicio nuevo, atado al bucle que esta corriendo ahora.
+
+        Motor se ata al primer bucle que ve. Cada test abre el suyo con
+        `asyncio.run()`, asi que un cliente creado en `setup_class` queda
+        apuntando a un bucle ya cerrado a partir del segundo test: de ahi el
+        "Event loop is closed". Creandolo aqui dentro, cada test tiene el suyo.
+        """
+        from motor.motor_asyncio import AsyncIOMotorClient
+
+        cliente = AsyncIOMotorClient(cls.settings.MONGODB_URL)
+        return MayorService(cliente[cls.settings.DATABASE_NAME])
+
     def test_01_validar_compatibilidad_end_to_end(self):
         """Test 1: Validación de compatibilidad completa"""
         print(f"\n📋 TEST 1: Validación de compatibilidad end-to-end...")
         
         async def run_test():
             # Validar compatibilidad usando el servicio
-            reporte = self.service.validar_compatibilidad_datos_reales(
+            reporte = await self._servicio().validar_compatibilidad_datos_reales(
                 self.empresa_id  # Ya no necesita str() porque es string
             )
             
@@ -91,7 +131,7 @@ class TestIntegracionCompleta:
             periodo = "20250800"  # Agosto 2025
             
             # Convertir asientos a formato PLE
-            libros_mayor_ple = self.service.convertir_asientos_a_libro_mayor_ple(
+            libros_mayor_ple = await self._servicio().convertir_asientos_a_libro_mayor_ple(
                 empresa_id=self.empresa_id,
                 empresa_ruc=self.empresa_ruc,
                 periodo=periodo
@@ -127,7 +167,7 @@ class TestIntegracionCompleta:
             periodo_aaaamm = "202508"
             
             # Generar archivo PLE completo
-            resultado = self.service.generar_archivo_ple_mayor_con_datos_reales(
+            resultado = await self._servicio().generar_archivo_ple_mayor_con_datos_reales(
                 empresa_id=self.empresa_id,
                 empresa_ruc=self.empresa_ruc,
                 periodo_aaaamm=periodo_aaaamm,
@@ -184,7 +224,7 @@ class TestIntegracionCompleta:
             periodo_aaaamm = "202508"
             
             # Generar archivo para validación
-            resultado = self.service.generar_archivo_ple_mayor_con_datos_reales(
+            resultado = await self._servicio().generar_archivo_ple_mayor_con_datos_reales(
                 empresa_id=self.empresa_id,
                 empresa_ruc=self.empresa_ruc,
                 periodo_aaaamm=periodo_aaaamm
@@ -244,14 +284,20 @@ class TestIntegracionCompleta:
         print(f"\n📅 TEST 5: Prueba con diferentes períodos...")
         
         async def run_test():
-            periodos_test = ["202507", "202508", "202509"]
+            # Los periodos que existen de verdad. Con "202507"/"202508" fijos,
+            # este test fallaba siempre en cuanto los datos eran de otro año.
+            periodos_test = sorted({
+                (a.get('fecha') or '')[:7].replace('-', '')
+                for a in self.asientos_reales
+                if (a.get('fecha') or '')[:7]
+            }) or ["202606"]
             resultados = []
             
             for periodo in periodos_test:
                 print(f"   📊 Procesando período: {periodo}")
                 
                 try:
-                    resultado = self.service.generar_archivo_ple_mayor_con_datos_reales(
+                    resultado = await self._servicio().generar_archivo_ple_mayor_con_datos_reales(
                         empresa_id=self.empresa_id,
                         empresa_ruc=self.empresa_ruc,
                         periodo_aaaamm=periodo,

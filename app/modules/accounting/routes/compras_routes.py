@@ -37,7 +37,8 @@ from ..schemas.compras_schemas import (
     PLEComprasMetadata,
     RegistroCompraResumen,
     ValidationResult,
-    PLEFileInfo
+    PLEFileInfo,
+    PLEComprasExportOptions,
 )
 
 from ..services.compras_service import ComprasService
@@ -71,41 +72,43 @@ def get_compras_service(db: AsyncIOMotorDatabase = Depends(get_database)) -> Com
 
 @router.get("/", response_model=List[RegistroCompraResponse])
 async def obtener_registros_compras(
-    empresa_id: str = Query(..., description="ID de la empresa"),
-    periodo_aaaamm: Optional[str] = Query(None, description="Período en formato AAAAMM"),
-    fecha_desde: Optional[date] = Query(None, description="Fecha inicio (YYYY-MM-DD)"),
-    fecha_hasta: Optional[date] = Query(None, description="Fecha fin (YYYY-MM-DD)"),
-    tipo_documento: Optional[str] = Query(None, description="Tipo de documento"),
+    empresa_id: str = Query(..., description="RUC de la empresa"),
+    periodo_inicio: Optional[str] = Query(None, description="Período inicio AAAAMM"),
+    periodo_fin: Optional[str] = Query(None, description="Período fin AAAAMM"),
+    periodo_aaaamm: Optional[str] = Query(None, description="Un solo período AAAAMM"),
+    tipo_documento: Optional[str] = Query(None, description="Tipo de comprobante"),
     proveedor_ruc: Optional[str] = Query(None, description="RUC del proveedor"),
+    incluir_anulados: bool = Query(False, description="Incluir los comprobantes anulados"),
     skip: int = Query(0, ge=0, description="Registros a omitir"),
     limit: int = Query(100, ge=1, le=1000, description="Límite de registros"),
     service: ComprasService = Depends(get_compras_service)
 ):
-    """Obtener registros de compras con filtros opcionales"""
+    """
+    Registros de compras con filtros opcionales.
+
+    Los filtros son los mismos que en ventas: se acota por **rango de
+    periodos**. `periodo_aaaamm` es el atajo para un solo mes.
+
+    La versión anterior construía el filtro con las claves `periodo`,
+    `fecha_desde` y `fecha_hasta`, que `listar_registros_compras` no acepta:
+    cualquier consulta con filtro moría con TypeError, y sin filtro devolvía
+    el histórico entero.
+    """
     try:
-        # Preparar filtros para el servicio
-        filtros = {
-            "empresa_id": empresa_id,
-            "incluir_anulados": False,
-            "pagina": (skip // limit) + 1,
-            "limite": limit
-        }
-        
-        # Agregar filtros opcionales si están presentes
-        if periodo_aaaamm:
-            filtros["periodo"] = periodo_aaaamm
-        if fecha_desde:
-            filtros["fecha_desde"] = fecha_desde
-        if fecha_hasta:
-            filtros["fecha_hasta"] = fecha_hasta
-        if tipo_documento:
-            filtros["tipo_comprobante"] = tipo_documento
-        if proveedor_ruc:
-            filtros["numero_documento_proveedor"] = proveedor_ruc
-        
-        # Llamar al servicio con filtros completos
-        resultado = await service.listar_registros_compras(**filtros)
-        
+        if periodo_aaaamm and not (periodo_inicio or periodo_fin):
+            periodo_inicio = periodo_fin = periodo_aaaamm
+
+        resultado = await service.listar_registros_compras(
+            empresa_id=empresa_id,
+            periodo_inicio=periodo_inicio,
+            periodo_fin=periodo_fin,
+            tipo_comprobante=tipo_documento,
+            numero_documento_proveedor=proveedor_ruc,
+            incluir_anulados=incluir_anulados,
+            pagina=(skip // limit) + 1,
+            limite=limit,
+        )
+
         return resultado.get("registros", [])
         
     except Exception as e:
@@ -294,34 +297,54 @@ async def validar_registro_compra(
 async def exportar_ple_compras(
     empresa_id: str = Query(..., description="ID de la empresa"),
     periodo_aaaamm: str = Query(..., description="Período en formato AAAAMM"),
-    formato: str = Query("txt", description="Formato de exportación (txt|excel)"),
+    correlativo: str = Query("0001", description="Correlativo del archivo, va en su nombre"),
     incluir_cabecera: bool = Query(True, description="Incluir cabecera en el archivo"),
     service: ComprasService = Depends(get_compras_service)
 ):
-    """Exportar registros de compras en formato PLE 080000"""
+    """
+    Exportar el registro de compras al PLE 080000.
+
+    El método se llama `generar_ple_compras` y recibe un objeto de opciones:
+    la ruta invocaba un `generar_archivo_ple` que no existe, así que este
+    endpoint devolvía un 500 sin llegar a leer un solo comprobante.
+    """
     try:
-        if formato.lower() == "excel":
-            archivo_bytes, filename = await service.exportar_excel_ple(
-                empresa_id, periodo_aaaamm, incluir_cabecera
+        resultado = await service.generar_ple_compras(
+            PLEComprasExportOptions(
+                empresa_id=empresa_id,
+                periodo_inicio=periodo_aaaamm,
+                periodo_fin=periodo_aaaamm,
+                correlativo_archivo=correlativo,
+                incluir_cabecera=incluir_cabecera,
             )
-            
-            return StreamingResponse(
-                io.BytesIO(archivo_bytes),
-                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+        if not resultado.contenido_archivo:
+            # Un archivo vacío no se descarga: se explica. Es el caso que
+            # estuvo pasando desapercibido.
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "mensaje": "No se generó ninguna línea para el período",
+                    "total_registros": resultado.total_registros,
+                    "con_errores": resultado.registros_con_errores,
+                    "errores": resultado.errores_encontrados[:10],
+                },
             )
-        else:
-            # Formato TXT por defecto
-            contenido_txt, filename = await service.generar_archivo_ple(
-                empresa_id, periodo_aaaamm, incluir_cabecera
-            )
-            
-            return StreamingResponse(
-                io.StringIO(contenido_txt),
-                media_type="text/plain",
-                headers={"Content-Disposition": f"attachment; filename={filename}"}
-            )
-            
+
+        return StreamingResponse(
+            io.StringIO(resultado.contenido_archivo),
+            media_type="text/plain",
+            headers={
+                "Content-Disposition": f"attachment; filename={resultado.nombre_archivo}",
+                "X-Total-Registros": str(resultado.total_registros),
+                "X-Registros-Exportados": str(resultado.registros_exportados),
+                "X-Registros-Con-Errores": str(resultado.registros_con_errores),
+            },
+        )
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error exportando PLE compras: {str(e)}")
         raise HTTPException(

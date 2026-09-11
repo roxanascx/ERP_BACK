@@ -5,7 +5,7 @@ Schemas Pydantic para RVIE - Registro de Ventas e Ingresos Electrónico
 from datetime import datetime, date
 from typing import List, Optional
 from decimal import Decimal
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 
 
@@ -15,14 +15,15 @@ class RvieConsultarInconsistenciasRequest(BaseModel):
     periodo: str = Field(..., description="Periodo YYYYMM", pattern="^\\d{6}$")
     fase: str = Field(default="propuesta", description="Fase del proceso", pattern="^(propuesta|preliminar)$")
     
-    @validator('ruc')
+    @field_validator('ruc')
+    @classmethod
     def validate_ruc(cls, v):
         if not v.isdigit():
             raise ValueError('RUC debe contener solo dígitos')
         return v
 from typing import List, Optional, Dict, Any
 from decimal import Decimal
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class RvieDescargarPropuestaRequest(BaseModel):
@@ -38,13 +39,15 @@ class RvieDescargarPropuestaRequest(BaseModel):
         description="True para incluir detalle completo de comprobantes"
     )
     
-    @validator('ruc')
+    @field_validator('ruc')
+    @classmethod
     def validate_ruc(cls, v):
         if not v.isdigit():
             raise ValueError('RUC debe contener solo dígitos')
         return v
     
-    @validator('periodo')
+    @field_validator('periodo')
+    @classmethod
     def validate_periodo(cls, v):
         if not v.isdigit():
             raise ValueError('Periodo debe contener solo dígitos')
@@ -76,13 +79,15 @@ class RvieAceptarPropuestaRequest(BaseModel):
         description="Confirmación explícita de aceptación"
     )
     
-    @validator('ruc')
+    @field_validator('ruc')
+    @classmethod
     def validate_ruc(cls, v):
         if not v.isdigit():
             raise ValueError('RUC debe contener solo dígitos')
         return v
     
-    @validator('periodo')
+    @field_validator('periodo')
+    @classmethod
     def validate_periodo(cls, v):
         if not v.isdigit():
             raise ValueError('Periodo debe contener solo dígitos')
@@ -95,7 +100,8 @@ class RvieAceptarPropuestaRequest(BaseModel):
             raise ValueError('Formato de periodo inválido')
         return v
     
-    @validator('observaciones')
+    @field_validator('observaciones')
+    @classmethod
     def validate_observaciones(cls, v):
         if v and len(v.strip()) == 0:
             return None  # Convertir string vacío a None
@@ -109,7 +115,8 @@ class RvieReemplazarPropuestaRequest(BaseModel):
     archivo_contenido: str = Field(..., description="Contenido del archivo TXT en base64")
     nombre_archivo: Optional[str] = Field(None, description="Nombre del archivo original")
     
-    @validator('ruc')
+    @field_validator('ruc')
+    @classmethod
     def validate_ruc(cls, v):
         if not v.isdigit():
             raise ValueError('RUC debe contener solo dígitos')
@@ -147,13 +154,15 @@ class RvieRegistrarPreliminarRequest(BaseModel):
     periodo: str = Field(..., description="Periodo YYYYMM", min_length=6, max_length=6)
     comprobantes: List[RvieComprobanteRequest] = Field(..., description="Lista de comprobantes")
     
-    @validator('ruc')
+    @field_validator('ruc')
+    @classmethod
     def validate_ruc(cls, v):
         if not v.isdigit():
             raise ValueError('RUC debe contener solo dígitos')
         return v
     
-    @validator('comprobantes')
+    @field_validator('comprobantes')
+    @classmethod
     def validate_comprobantes(cls, v):
         if not v:
             raise ValueError('Debe incluir al menos un comprobante')
@@ -168,7 +177,8 @@ class RvieConsultarInconsistenciasRequest(BaseModel):
     periodo: str = Field(..., description="Periodo YYYYMM", min_length=6, max_length=6)
     fase: str = Field(default="propuesta", description="Fase del proceso", pattern="^(propuesta|preliminar)$")
     
-    @validator('ruc')
+    @field_validator('ruc')
+    @classmethod
     def validate_ruc(cls, v):
         if not v.isdigit():
             raise ValueError('RUC debe contener solo dígitos')
@@ -181,13 +191,15 @@ class RvieGenerarTicketRequest(BaseModel):
     periodo: str = Field(..., description="Periodo YYYYMM", min_length=6, max_length=6)
     operacion: str = Field(..., description="Tipo de operación", pattern="^(descargar-propuesta|aceptar-propuesta|reemplazar-propuesta)$")
     
-    @validator('ruc')
+    @field_validator('ruc')
+    @classmethod
     def validate_ruc(cls, v):
         if not v.isdigit():
             raise ValueError('RUC debe contener solo dígitos')
         return v
     
-    @validator('periodo')
+    @field_validator('periodo')
+    @classmethod
     def validate_periodo(cls, v):
         if not v.isdigit():
             raise ValueError('Periodo debe contener solo dígitos')
@@ -206,7 +218,8 @@ class RvieConsultarTicketRequest(BaseModel):
     ruc: str = Field(..., description="RUC del contribuyente", min_length=11, max_length=11)
     ticket_id: str = Field(..., description="ID del ticket", min_length=1)
     
-    @validator('ruc')
+    @field_validator('ruc')
+    @classmethod
     def validate_ruc(cls, v):
         if not v.isdigit():
             raise ValueError('RUC debe contener solo dígitos')
@@ -218,7 +231,8 @@ class RvieDescargarArchivoRequest(BaseModel):
     ruc: str = Field(..., description="RUC del contribuyente", min_length=11, max_length=11)
     ticket_id: str = Field(..., description="ID del ticket", min_length=1)
     
-    @validator('ruc')
+    @field_validator('ruc')
+    @classmethod
     def validate_ruc(cls, v):
         if not v.isdigit():
             raise ValueError('RUC debe contener solo dígitos')

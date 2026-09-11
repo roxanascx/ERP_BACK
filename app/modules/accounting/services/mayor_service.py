@@ -636,7 +636,7 @@ class MayorService:
     # MÉTODOS PARA DATOS REALES - FASE 2
     # ================================
     
-    def obtener_asientos_contables_reales(
+    async def obtener_asientos_contables_reales(
         self,
         empresa_id: str,
         periodo_desde: str = None,
@@ -667,9 +667,11 @@ class MayorService:
                 if periodo_hasta:
                     filtro["fecha"]["$lte"] = periodo_hasta
             
-            # Obtener asientos de MongoDB
+            # Motor devuelve un cursor asincrono: `list(cursor)` lanzaba
+            # "AsyncIOMotorCursor object is not iterable" en cada llamada, asi
+            # que este metodo no habia devuelto nunca un solo asiento.
             cursor = self.db.asientos_contables.find(filtro).sort("fecha", 1)
-            asientos = list(cursor)
+            asientos = await cursor.to_list(length=None)
             
             self.logger.info(f"Asientos obtenidos: {len(asientos)}")
             
@@ -679,7 +681,7 @@ class MayorService:
             self.logger.error(f"Error obteniendo asientos reales: {str(e)}")
             raise AccountingException(f"Error obteniendo asientos reales: {str(e)}")
     
-    def convertir_asientos_a_libro_mayor_ple(
+    async def convertir_asientos_a_libro_mayor_ple(
         self,
         empresa_id: str,
         empresa_ruc: str,
@@ -704,7 +706,7 @@ class MayorService:
             self.logger.info(f"Convirtiendo asientos a PLE Mayor - Empresa: {empresa_id}, Período: {periodo}")
             
             # Obtener asientos contables reales
-            asientos = self.obtener_asientos_contables_reales(
+            asientos = await self.obtener_asientos_contables_reales(
                 empresa_id=empresa_id,
                 periodo_desde=periodo_desde,
                 periodo_hasta=periodo_hasta
@@ -729,7 +731,7 @@ class MayorService:
             self.logger.error(f"Error convirtiendo asientos a PLE: {str(e)}")
             raise AccountingException(f"Error convirtiendo asientos a PLE: {str(e)}")
     
-    def generar_archivo_ple_mayor_con_datos_reales(
+    async def generar_archivo_ple_mayor_con_datos_reales(
         self,
         empresa_id: str,
         empresa_ruc: str,
@@ -759,7 +761,7 @@ class MayorService:
             periodo_ple = f"{periodo_aaaamm}00"
             
             # Convertir asientos a formato PLE
-            libros_mayor_ple = self.convertir_asientos_a_libro_mayor_ple(
+            libros_mayor_ple = await self.convertir_asientos_a_libro_mayor_ple(
                 empresa_id=empresa_id,
                 empresa_ruc=empresa_ruc,
                 periodo=periodo_ple,
@@ -830,7 +832,7 @@ class MayorService:
             self.logger.error(f"Error generando archivo PLE Mayor con datos reales: {str(e)}")
             raise AccountingException(f"Error generando archivo PLE Mayor: {str(e)}")
     
-    def validar_compatibilidad_datos_reales(self, empresa_id: str) -> Dict[str, Any]:
+    async def validar_compatibilidad_datos_reales(self, empresa_id: str) -> Dict[str, Any]:
         """
         Validar compatibilidad de datos reales para PLE Mayor
         
@@ -844,7 +846,7 @@ class MayorService:
             self.logger.info(f"Validando compatibilidad datos reales - Empresa: {empresa_id}")
             
             # Obtener asientos contables
-            asientos = self.obtener_asientos_contables_reales(empresa_id)
+            asientos = await self.obtener_asientos_contables_reales(empresa_id)
             
             # Usar el adaptador para validar compatibilidad
             reporte = self.data_adapter.validar_compatibilidad(asientos)
