@@ -1,8 +1,16 @@
+import os
+import json
+import sys
+
+# En Windows la consola usa cp1252 y los emojis de los logs de arranque
+# lanzan UnicodeEncodeError, abortando el startup. En Linux (Render) es un no-op.
+for _stream in (sys.stdout, sys.stderr):
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-import os
-import json
 
 from .database import connect_to_mongo, close_mongo_connection
 from .routes import users
