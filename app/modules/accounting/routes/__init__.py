@@ -8,6 +8,7 @@ from .ventas_routes import router as ventas_router
 from .compras_routes import router as compras_router
 from .plan_contable_routes import router as plan_contable_router
 from .subdiario_routes import router as subdiario_router
+from .centro_costo_routes import router as centro_costo_router
 from ..ple_unified_routes import router as ple_unified_router
 from .importacion_sire_routes import router as importacion_sire_router
 from .importacion_sire_compras_routes import router as importacion_sire_compras_router
@@ -30,6 +31,11 @@ router.include_router(compras_router)   # Registro Compras PLE 080000
 # determina que asiento producen. Es la base de la contabilizacion
 # automatica de las ventas que llegan de SIRE.
 router.include_router(subdiario_router, prefix="/subdiarios", tags=["Subdiarios"])
+
+# Configuracion de centros de costo: catalogo que, combinado con
+# `requiere_centro_costo` del Plan de Cuentas, exige centro de costo al
+# grabar un asiento en las cuentas que lo tengan marcado.
+router.include_router(centro_costo_router, prefix="/centros-costo", tags=["Centros de Costo"])
 
 # Exportacion PLE unificada. Estaba montada solo en el `routes.py` que el
 # paquete eclipsaba, asi que sus endpoints no existian y la exportacion

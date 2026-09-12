@@ -232,7 +232,13 @@ class AsientoContableBase(BaseModel):
     # PLE a SUNAT, asignarles un mismo CUO con correlativo local por línea
     # (ver ple_formatter_sunat_v3.formatear_lote_asientos).
     numeroAsiento: Optional[str] = Field(None, max_length=50)
-    
+
+    # Centro de costo de la línea. Obligatorio solo cuando `cuentaContable`
+    # corresponde a una cuenta con `requiere_centro_costo=True` en el Plan de
+    # Cuentas (ver `LibroDiarioService._validar_asiento`); en el resto de
+    # cuentas queda vacío. Mismo shape que `cuentaContable`: {codigo, nombre}.
+    centroCosto: Optional[Dict[str, str]] = None
+
     @validator('cuentaContable')
     def validate_cuenta_contable(cls, v):
         if not isinstance(v, dict):
@@ -267,6 +273,7 @@ class AsientoContableUpdate(BaseModel):
     debe: Optional[float] = None
     haber: Optional[float] = None
     numeroAsiento: Optional[str] = None
+    centroCosto: Optional[Dict[str, str]] = None
 
 
 class AsientoContableResponse(AsientoContableBase):

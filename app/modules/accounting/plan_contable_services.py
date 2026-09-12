@@ -7,10 +7,49 @@ from datetime import datetime
 from app.modules.accounting.plan_contable_repository import AccountingRepository
 from app.models.plan_contable import (
     CuentaContableCreate,
+    CuentaContableUpdate,
     CuentaContableResponse,
     EstadisticasPlanContable,
     ClaseContable,
 )
+
+
+def _calcular_nivel_y_clase(codigo: str) -> "tuple[int, int]":
+    """
+    Nivel y clase se deducen de la longitud/primer dígito del código, nunca de
+    lo que mande el cliente: el backend es la única fuente de verdad, porque
+    antes solo lo calculaba el frontend (`CuentaModal.tsx`) y cualquiera podía
+    mandar un `nivel`/`clase_contable` inconsistente con el código.
+    """
+    codigo = (codigo or "").strip()
+    nivel = min(len(codigo), 9) if codigo else 1
+    clase_contable = int(codigo[0]) if codigo and codigo[0].isdigit() else 1
+    return nivel, clase_contable
+
+
+def _validar_flags_cuenta(datos: Dict[str, Any]) -> None:
+    """
+    Reglas de negocio sobre los flags nuevos de Centro de Costos y Caja/Bancos.
+
+    Solo una cuenta hoja que acepta movimiento puede exigir centro de costo o
+    representar una caja/banco, y una cuenta de caja/banco solo tiene sentido
+    en la clase 1 (Activo) del PCGE, donde vive "Efectivo y equivalentes".
+    """
+    acepta_movimiento = datos.get("acepta_movimiento", True)
+    clase_contable = datos.get("clase_contable")
+
+    if datos.get("requiere_centro_costo") and not acepta_movimiento:
+        raise ValueError(
+            "Solo una cuenta que acepta movimiento puede requerir centro de costo"
+        )
+    if (datos.get("es_cuenta_caja") or datos.get("es_cuenta_bancaria")) and not acepta_movimiento:
+        raise ValueError(
+            "Solo una cuenta que acepta movimiento puede ser cuenta de caja o bancaria"
+        )
+    if (datos.get("es_cuenta_caja") or datos.get("es_cuenta_bancaria")) and clase_contable != 1:
+        raise ValueError(
+            "Solo las cuentas de la clase 1 (Activo) pueden ser cuenta de caja o bancaria"
+        )
 
 
 class PlanContableServiceAdapter:
@@ -54,8 +93,12 @@ class PlanContableServiceAdapter:
             raise ValueError(f"Ya existe una cuenta con el código {payload.codigo}")
 
         documento = payload.dict()
+        nivel, clase_contable = _calcular_nivel_y_clase(payload.codigo)
+        documento["nivel"] = nivel
+        documento["clase_contable"] = clase_contable
         documento["fecha_creacion"] = datetime.now()
-        documento["naturaleza"] = self._determinar_naturaleza(payload.clase_contable)
+        documento["naturaleza"] = self._determinar_naturaleza(clase_contable)
+        _validar_flags_cuenta(documento)
 
         result = await self.repo.insert_cuenta(documento)
         created = await self.repo.find_by_codigo(documento["codigo"])
@@ -142,17 +185,20 @@ class PlanContableServiceAdapter:
 
         return EstadisticasPlanContable(total_cuentas=total, cuentas_activas=activas, cuentas_inactivas=inactivas, por_clase=por_clase, por_nivel=por_nivel)
 
-    async def actualizar_cuenta(self, codigo: str, payload: dict) -> Optional[CuentaContableResponse]:
+    async def actualizar_cuenta(self, codigo: str, payload: CuentaContableUpdate) -> Optional[CuentaContableResponse]:
         """Actualizar una cuenta contable"""
         # Verificar que la cuenta existe
         cuenta_existente = await self.repo.find_by_codigo(codigo)
         if not cuenta_existente:
             raise ValueError(f"No existe una cuenta con el código {codigo}")
-        
-        # Preparar datos de actualización
-        update_data = {k: v for k, v in payload.items() if v is not None}
+
+        # Preparar datos de actualización (solo lo que el cliente mandó)
+        update_data = payload.dict(exclude_none=True)
         update_data["fecha_modificacion"] = datetime.now()
-        
+
+        # Validar los flags nuevos contra el estado resultante (existente + cambios)
+        _validar_flags_cuenta({**cuenta_existente, **update_data})
+
         # Actualizar
         result = await self.repo.update_cuenta(codigo, update_data)
         
@@ -210,6 +256,9 @@ class PlanContableServiceAdapter:
             tipo_plan=documento.get("tipo_plan", "estandar"),
             empresa_id=documento.get("empresa_id"),
             archivo_origen=documento.get("archivo_origen"),
+            requiere_centro_costo=documento.get("requiere_centro_costo", False),
+            es_cuenta_caja=documento.get("es_cuenta_caja", False),
+            es_cuenta_bancaria=documento.get("es_cuenta_bancaria", False),
             fecha_creacion=documento.get("fecha_creacion"),
             fecha_modificacion=documento.get("fecha_modificacion"),
         )

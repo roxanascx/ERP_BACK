@@ -6,6 +6,7 @@ from datetime import datetime
 import logging
 
 from app.modules.accounting.libro_diario_repository import LibroDiarioRepository
+from app.modules.accounting.plan_contable_repository import AccountingRepository
 from app.modules.companies.services import CompanyService
 from app.modules.accounting.schemas import (
     LibroDiarioCreate,
@@ -33,6 +34,8 @@ class LibroDiarioService:
     def __init__(self):
         self.repository = LibroDiarioRepository()
         self.company_service = CompanyService()
+        # Necesario para validar `requiere_centro_costo` en `_validar_asiento`.
+        self.plan_contable_repo = AccountingRepository()
     
     # =====================================
     # OPERACIONES DE LIBRO DIARIO V2 (FRONTEND-ALIGNED)
@@ -897,7 +900,19 @@ class LibroDiarioService:
             datetime.strptime(asiento.fecha, "%Y-%m-%d")
         except ValueError:
             raise ValueError("Formato de fecha inválido. Use YYYY-MM-DD")
-    
+
+        # Si la cuenta exige centro de costo (Plan de Cuentas), el asiento
+        # debe traerlo. Una cuenta que no aparece en el plan (planes
+        # personalizados en importación, datos de prueba) no bloquea el
+        # asiento: solo se exige cuando el plan la marca explícitamente.
+        codigo_cuenta = (asiento.cuentaContable or {}).get("codigo")
+        if codigo_cuenta and not asiento.centroCosto:
+            cuenta = await self.plan_contable_repo.list_cuentas({"codigo": codigo_cuenta}, limit=1)
+            if cuenta and cuenta[0].get("requiere_centro_costo"):
+                raise ValueError(
+                    f"La cuenta {codigo_cuenta} exige centro de costo para poder contabilizarse"
+                )
+
     def _extraer_periodo_fecha(self, fecha: str) -> str:
         """Extraer período (año-mes) de una fecha"""
         return fecha[:7]  # YYYY-MM

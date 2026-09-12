@@ -97,7 +97,7 @@ class DataAdapterMayor:
                 numero_correlativo=asiento.get('numeroCorrelativo', '0001'),
                 codigo_cuenta_contable=codigo_cuenta,
                 codigo_unidad_operacion='',  # No disponible en datos actuales
-                codigo_centro_costos='',     # No disponible en datos actuales
+                codigo_centro_costos=(asiento.get('centroCosto') or {}).get('codigo', ''),
                 tipo_moneda='PEN',           # Asumimos soles por defecto
                 tipo_documento_identidad=TipoDocumentoIdentidad.RUC,
                 numero_documento_identidad=empresa_ruc,

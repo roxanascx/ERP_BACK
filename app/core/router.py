@@ -29,6 +29,9 @@ from ..modules.consultasapi import routes as consultas_api_routes
 # Importar rutas del módulo System Config (Configuración del Sistema)
 from ..modules.system_config import routes as system_config_routes
 
+# Importar rutas del módulo Caja/Bancos
+from ..modules.caja_bancos import routes as caja_bancos_routes
+
 # Router principal que incluye todos los módulos
 api_router = APIRouter(prefix="/api/v1")
 
@@ -168,4 +171,11 @@ api_router.include_router(
     accounting_routes.router,
     prefix="/accounting",
     tags=["Accounting"]
+)
+
+# Incluir rutas del módulo Caja/Bancos
+api_router.include_router(
+    caja_bancos_routes.router,
+    prefix="/caja-bancos",
+    tags=["Caja/Bancos"]
 )

@@ -15,6 +15,7 @@ import io
 from app.modules.accounting.services import AccountingService
 from app.models.plan_contable import (
     CuentaContableCreate,
+    CuentaContableUpdate,
     CuentaContableResponse,
     ValidationResult,
     ImportResult,
@@ -97,7 +98,7 @@ async def create_cuenta(payload: CuentaContableCreate, service: AccountingServic
 
 
 @router.put("/cuentas/{codigo}", summary="Actualizar cuenta contable")
-async def update_cuenta(codigo: str, payload: dict, service: AccountingService = Depends(AccountingService)):
+async def update_cuenta(codigo: str, payload: CuentaContableUpdate, service: AccountingService = Depends(AccountingService)):
     try:
         result = await service.plan_service.actualizar_cuenta(codigo, payload)
         if not result:

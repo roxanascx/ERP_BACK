@@ -1,7 +1,18 @@
 from typing import Optional, List, Dict, Any
+from enum import Enum
 from pydantic import BaseModel, Field
 from datetime import datetime
 from bson import ObjectId
+
+
+class NaturalezaCuenta(str, Enum):
+    DEUDORA = "DEUDORA"
+    ACREEDORA = "ACREEDORA"
+
+
+class MonedaCuenta(str, Enum):
+    MN = "MN"
+    ME = "ME"
 
 class PyObjectId(ObjectId):
     @classmethod
@@ -29,12 +40,17 @@ class CuentaContable(BaseModel):
     cuenta_padre: Optional[str] = None
     es_hoja: bool = True
     acepta_movimiento: bool = True
-    naturaleza: str = "DEUDORA"
-    moneda: str = "MN"
+    naturaleza: NaturalezaCuenta = NaturalezaCuenta.DEUDORA
+    moneda: MonedaCuenta = MonedaCuenta.MN
     activa: bool = True
     tipo_plan: str = "estandar"  # "estandar" | "personalizado"
     empresa_id: Optional[str] = None  # Para planes personalizados por empresa
     archivo_origen: Optional[str] = None  # Nombre del archivo importado
+    # Metadatos para Centro de Costos y Caja/Bancos: solo tienen sentido en
+    # cuentas hoja que aceptan movimiento (validado en plan_contable_services).
+    requiere_centro_costo: bool = False
+    es_cuenta_caja: bool = False
+    es_cuenta_bancaria: bool = False
     fecha_creacion: datetime = Field(default_factory=datetime.now)
     fecha_modificacion: Optional[datetime] = None
 
@@ -52,19 +68,26 @@ class CuentaContableCreate(BaseModel):
     cuenta_padre: Optional[str] = None
     es_hoja: bool = True
     acepta_movimiento: bool = True
-    naturaleza: str = "DEUDORA"
-    moneda: str = "MN"
+    naturaleza: NaturalezaCuenta = NaturalezaCuenta.DEUDORA
+    moneda: MonedaCuenta = MonedaCuenta.MN
     activa: bool = True
     tipo_plan: str = "estandar"
     empresa_id: Optional[str] = None
     archivo_origen: Optional[str] = None
+    requiere_centro_costo: bool = False
+    es_cuenta_caja: bool = False
+    es_cuenta_bancaria: bool = False
 
 class CuentaContableUpdate(BaseModel):
     descripcion: Optional[str] = None
     es_hoja: Optional[bool] = None
     acepta_movimiento: Optional[bool] = None
-    naturaleza: Optional[str] = None
+    naturaleza: Optional[NaturalezaCuenta] = None
+    moneda: Optional[MonedaCuenta] = None
     activa: Optional[bool] = None
+    requiere_centro_costo: Optional[bool] = None
+    es_cuenta_caja: Optional[bool] = None
+    es_cuenta_bancaria: Optional[bool] = None
 
 class CuentaContableResponse(BaseModel):
     id: str
@@ -77,12 +100,15 @@ class CuentaContableResponse(BaseModel):
     cuenta_padre: Optional[str]
     es_hoja: bool
     acepta_movimiento: bool
-    naturaleza: str
-    moneda: str
+    naturaleza: NaturalezaCuenta
+    moneda: MonedaCuenta
     activa: bool
     tipo_plan: str = "estandar"
     empresa_id: Optional[str] = None
     archivo_origen: Optional[str] = None
+    requiere_centro_costo: bool = False
+    es_cuenta_caja: bool = False
+    es_cuenta_bancaria: bool = False
     tiene_hijos: bool = False
     fecha_creacion: datetime
     fecha_modificacion: Optional[datetime]
