@@ -23,6 +23,8 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from ...sire.services.api_client import SunatApiClient
 from ...sire.services.auth_service import SireAuthService
 from ...sire.services.sunat_endpoints import API_SIRE
+from ...socios_negocio.repositories import SocioNegocioRepository
+from ...socios_negocio.sincronizacion_sire import SincronizacionSociosSireService
 from .subdiario_service import SubdiarioService
 
 logger = logging.getLogger(__name__)
@@ -105,6 +107,7 @@ class ImportacionSireService:
         self.api_client = api_client
         self.auth_service = auth_service
         self.subdiarios = SubdiarioService(database)
+        self.socios_sync = SincronizacionSociosSireService(SocioNegocioRepository(database))
 
     # ------------------------------------------------------------------
     # Lectura desde SUNAT
@@ -400,6 +403,19 @@ class ImportacionSireService:
                     {"_id": previo["_id"]}, {"$set": documento}
                 )
                 actualizados += 1
+
+            # El cliente del comprobante se sincroniza como Socio de Negocio:
+            # si no existe se crea, y si existe se actualiza solo cuando el
+            # dato nuevo es mejor (ver `SincronizacionSociosSireService`). Sin
+            # esto, un RUC con facturas importadas podía no aparecer en
+            # ningún buscador de socio (p.ej. al aplicar un pago en Caja/Bancos).
+            await self.socios_sync.sincronizar_uno(
+                ruc,
+                r.get("tipo_documento_cliente"),
+                r.get("numero_documento_cliente"),
+                r.get("razon_social_cliente"),
+                "cliente",
+            )
 
         if bloqueados:
             logger.warning(

@@ -308,31 +308,33 @@ class LibroDiarioRepository:
             raise Exception(f"Error en validación: {str(e)}")
     
     async def obtener_siguiente_correlativo(self, empresa_id: str, periodo: str) -> str:
-        """Obtener el siguiente número correlativo disponible"""
+        """
+        Obtener el siguiente número correlativo disponible.
+
+        `numeroCorrelativo` mezcla formatos entre orígenes ("000021" de SIRE,
+        "0001-1" del propio Libro Diario manual): ordenar por el campo como
+        texto compara lexicográficamente, así que un `find_one(sort=...)`
+        podía devolver un valor con guión, fallar al convertirlo a `int` y
+        caer siempre a 1 -chocando con el índice único (empresaId,
+        numeroCorrelativo) en cuanto ese "1" ya existía-. Se filtra a los
+        puramente numéricos y se comparan como número, no como texto.
+        """
         try:
-            # Buscar el último correlativo usado en el período
             filtro = {
                 "empresaId": empresa_id,
-                "fecha": {"$regex": f"^{periodo}"}
+                "fecha": {"$regex": f"^{periodo}"},
+                "numeroCorrelativo": {"$regex": r"^\d+$"},
             }
-            
-            # Corrección: usar await con find_one
-            ultimo_asiento = await self.asiento_model.collection.find_one(
-                filtro,
-                sort=[("numeroCorrelativo", -1)]
-            )
-            
-            if ultimo_asiento:
-                try:
-                    ultimo_numero = int(ultimo_asiento["numeroCorrelativo"])
-                    siguiente = ultimo_numero + 1
-                except ValueError:
-                    siguiente = 1
-            else:
-                siguiente = 1
-            
+            resultado = await self.asiento_model.collection.aggregate([
+                {"$match": filtro},
+                {"$addFields": {"_num": {"$toInt": "$numeroCorrelativo"}}},
+                {"$sort": {"_num": -1}},
+                {"$limit": 1},
+            ]).to_list(1)
+
+            siguiente = (resultado[0]["_num"] + 1) if resultado else 1
             return str(siguiente).zfill(6)  # Formato: 000001
-            
+
         except Exception as e:
             raise Exception(f"Error al obtener correlativo: {str(e)}")
     

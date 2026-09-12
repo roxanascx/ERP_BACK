@@ -35,7 +35,9 @@ from uuid import uuid4
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from ..plan_contable_repository import AccountingRepository
 from ..schemas.schemas_subdiario import NaturalezaCompra
+from .asientos_automaticos import lineas_automaticas_por_destino
 from .subdiario_service import SubdiarioService
 
 logger = logging.getLogger(__name__)
@@ -85,6 +87,7 @@ class ContabilizacionComprasService:
         self.compras = database.registro_compras
         self.asientos = database["asientos_contables"]
         self.subdiarios = SubdiarioService(database)
+        self.plan_contable_repo = AccountingRepository()
 
     # ------------------------------------------------------------------
     # Selección de lo pendiente
@@ -365,6 +368,45 @@ class ContabilizacionComprasService:
                 })
                 correlativo += 1
 
+                # Cuentas autogeneradas (cargo/abono) del Plan de Cuentas: si
+                # la cuenta de esta línea las tiene configuradas, se añaden
+                # además sus líneas espejo, bajo el mismo numeroAsiento. Un
+                # fallo aquí no debe apartar el comprobante entero -es un
+                # efecto adicional, no el asiento que SUNAT exige-, así que se
+                # registra y se continúa.
+                try:
+                    monto = linea["debe"] or linea["haber"] or 0
+                    auto_lineas = await lineas_automaticas_por_destino(
+                        self.plan_contable_repo, linea["codigo"], monto
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[AUTO_DESTINO] No se pudieron calcular las líneas "
+                        f"automáticas de {linea['codigo']} ({etiqueta}): {e}"
+                    )
+                    auto_lineas = []
+
+                for auto in auto_lineas:
+                    documentos.append({
+                        "empresaId": empresa_id,
+                        "libroId": libro_id,
+                        "numeroCorrelativo": str(correlativo).zfill(6),
+                        "numeroAsiento": numero_asiento,
+                        "fecha": fecha,
+                        "glosa": f"{glosa} (auto: destino de {linea['codigo']})",
+                        "codigoLibro": "5.1",
+                        "codigoLibroOrigen": None,
+                        "numeroDocumento": etiqueta,
+                        "cuentaContable": auto["cuentaContable"],
+                        "debe": auto["debe"],
+                        "haber": auto["haber"],
+                        "lote_contabilizacion": lote,
+                        "origen": "AUTO_DESTINO",
+                        "usuarioCreacion": usuario,
+                        "fechaCreacion": ahora,
+                    })
+                    correlativo += 1
+
             marcas.append((compra["_id"], numero_asiento))
 
         if documentos:
@@ -481,17 +523,22 @@ class ContabilizacionComprasService:
         Se calcula una sola vez y se va incrementando en memoria: pedirlo por
         cada línea sería lento y propenso a chocar. El correlativo es común a
         ventas y compras porque el libro diario también lo es.
+
+        `numeroCorrelativo` mezcla formatos entre orígenes ("000021" de SIRE,
+        "0001-1" del Libro Diario manual): ordenar por el campo como texto
+        compara lexicográficamente, así que un `find_one(sort=...)` puede
+        devolver un valor con guión, fallar al convertirlo a `int` y caer
+        siempre a 1 -chocando con el índice único en cuanto ese "1" ya
+        existe-. Se filtra a los puramente numéricos y se comparan como
+        número, no como texto.
         """
-        ultimo = await self.asientos.find_one(
-            {"empresaId": empresa_id},
-            sort=[("numeroCorrelativo", -1)],
-        )
-        if not ultimo:
-            return 1
-        try:
-            return int(ultimo["numeroCorrelativo"]) + 1
-        except (KeyError, TypeError, ValueError):
-            return 1
+        resultado = await self.asientos.aggregate([
+            {"$match": {"empresaId": empresa_id, "numeroCorrelativo": {"$regex": r"^\d+$"}}},
+            {"$addFields": {"_num": {"$toInt": "$numeroCorrelativo"}}},
+            {"$sort": {"_num": -1}},
+            {"$limit": 1},
+        ]).to_list(1)
+        return (resultado[0]["_num"] + 1) if resultado else 1
 
     # ------------------------------------------------------------------
     # Deshacer

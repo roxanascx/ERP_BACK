@@ -28,6 +28,8 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from ...sire.services.api_client import SunatApiClient
 from ...sire.services.auth_service import SireAuthService
 from ...sire.services.sunat_endpoints import CodTipoArchivo
+from ...socios_negocio.repositories import SocioNegocioRepository
+from ...socios_negocio.sincronizacion_sire import SincronizacionSociosSireService
 from ...sire.utils.propuesta_rce import parsear_propuesta
 from .subdiario_service import SubdiarioService
 
@@ -116,6 +118,7 @@ class ImportacionSireComprasService:
         self.api_client = api_client
         self.auth_service = auth_service
         self.subdiarios = SubdiarioService(database)
+        self.socios_sync = SincronizacionSociosSireService(SocioNegocioRepository(database))
 
     # ------------------------------------------------------------------
     # Lectura desde SUNAT
@@ -438,6 +441,17 @@ class ImportacionSireComprasService:
                     {"_id": previo["_id"]}, {"$set": documento}
                 )
                 actualizados += 1
+
+            # El proveedor del comprobante se sincroniza como Socio de
+            # Negocio: ver el mismo bloque en `importacion_sire_service.py`
+            # (ventas) para el porqué.
+            await self.socios_sync.sincronizar_uno(
+                ruc,
+                r.get("tipo_documento_proveedor"),
+                r.get("numero_documento_proveedor"),
+                r.get("razon_social_proveedor"),
+                "proveedor",
+            )
 
         if bloqueados:
             logger.warning(

@@ -11,7 +11,7 @@ fase posterior.
 
 from datetime import datetime
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -31,11 +31,26 @@ class TipoMovimientoCajaBanco(str, Enum):
     EGRESO = "EGRESO"
 
 
-class MedioPago(str, Enum):
-    EFECTIVO = "EFECTIVO"
-    TRANSFERENCIA = "TRANSFERENCIA"
-    CHEQUE = "CHEQUE"
-    TARJETA = "TARJETA"
+class DocumentoTipo(str, Enum):
+    """A qué registro pertenece un documento aplicado: Compras o Ventas."""
+    COMPRA = "COMPRA"
+    VENTA = "VENTA"
+
+
+class DocumentoAplicadoBase(BaseModel):
+    """
+    Una aplicación de pago/cobro contra un documento pendiente de Registro de
+    Compras o Ventas (ver `pendientes.py`). El saldo de ese documento se
+    deriva sumando estas aplicaciones, nunca se guarda un campo "saldo" en el
+    documento origen.
+    """
+    documento_tipo: DocumentoTipo
+    documento_id: str
+    monto: float = Field(..., gt=0)
+
+
+class DocumentoAplicadoCreate(DocumentoAplicadoBase):
+    """Alta de una aplicación, dentro de un `MovimientoCajaBancoCreate`."""
 
 
 class CuentaCajaBancoBase(BaseModel):
@@ -98,21 +113,30 @@ class MovimientoCajaBancoBase(BaseModel):
     tipo: TipoMovimientoCajaBanco
     monto: float = Field(..., gt=0)
     glosa: str = Field(..., max_length=500)
-    medio_pago: MedioPago = MedioPago.EFECTIVO
+    # Códigos de los catálogos en `catalogos.py` (Tipo de Documento, Medio de
+    # Pago, Flujo de Efectivo). Se validan en el servicio, no aquí con un
+    # Enum de Pydantic, para no tener que tocar el schema cada vez que se
+    # corrija una entrada de un catálogo que es solo texto de referencia.
+    tipo_documento: str = Field(..., max_length=2)
+    medio_pago: str = Field(..., max_length=3)
+    flujo_efectivo: str = Field(..., max_length=3)
     documento_referencia: Optional[str] = Field(None, max_length=50)
-    # Solo de referencia (quién cobró/pagó); no reemplaza la contra-cuenta.
+    # Solo de referencia (quién cobró/pagó); también se usa para buscar sus
+    # documentos pendientes en `pendientes.py`.
     socio_negocio_id: Optional[str] = None
-    # Cuenta contra la que se contabiliza el movimiento (la cuenta por
-    # cobrar/pagar del socio, un gasto, un ingreso...). Se exige siempre:
-    # este ERP no tiene todavía una cuenta contable asociada a cada socio
-    # de negocio, así que adivinarla produciría asientos mal imputados.
-    contra_cuenta: Dict[str, str]
+    # Documentos de Compras/Ventas que este movimiento cancela, total o
+    # parcialmente. Ver `DocumentoAplicadoBase`.
+    documentos_aplicados: List[DocumentoAplicadoCreate] = Field(default_factory=list)
+    # Cuenta contra la que se contabiliza la parte del importe que NO quedó
+    # cubierta por `documentos_aplicados` (un pago a cuenta sin factura, un
+    # vuelto, etc.). Opcional: solo hace falta si sobra importe sin aplicar.
+    contra_cuenta: Optional[Dict[str, str]] = None
     centro_costo: Optional[Dict[str, str]] = None
 
     @field_validator("contra_cuenta")
     @classmethod
-    def contra_cuenta_con_codigo(cls, v: Dict[str, str]) -> Dict[str, str]:
-        if not v.get("codigo"):
+    def contra_cuenta_con_codigo(cls, v: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+        if v is not None and not v.get("codigo"):
             raise ValueError("contra_cuenta debe traer al menos el código")
         return v
 
@@ -129,3 +153,28 @@ class MovimientoCajaBancoResponse(MovimientoCajaBancoBase):
     numeroAsiento: Optional[str] = None
     creado_en: Optional[datetime] = None
     creado_por: Optional[str] = None
+
+
+class DocumentoPendiente(BaseModel):
+    """
+    Un documento de Registro de Compras o Ventas con saldo pendiente de
+    pago/cobro, tal como lo devuelve `pendientes.listar_pendientes`.
+    """
+    documento_id: str
+    documento_tipo: DocumentoTipo
+    tipo_comprobante: Optional[str] = None
+    serie: Optional[str] = None
+    numero: Optional[str] = None
+    fecha_comprobante: Optional[str] = None
+    fecha_vencimiento: Optional[str] = None
+    moneda: Optional[str] = None
+    importe_total: float
+    monto_pagado: float
+    saldo_pendiente: float
+    dias_vencido: Optional[int] = None
+    # Quién debe/a quién se le debe este documento (RUC/DNI y razón social
+    # del proveedor o cliente, tal como quedaron en Registro de Compras o
+    # Ventas). Se incluye siempre, no solo en el modo "todos los pendientes",
+    # para no tener que volver a resolverlo en el frontend.
+    contraparte_nombre: Optional[str] = None
+    contraparte_documento: Optional[str] = None

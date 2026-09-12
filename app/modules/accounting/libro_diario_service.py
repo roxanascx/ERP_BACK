@@ -7,6 +7,7 @@ import logging
 
 from app.modules.accounting.libro_diario_repository import LibroDiarioRepository
 from app.modules.accounting.plan_contable_repository import AccountingRepository
+from app.modules.accounting.services.asientos_automaticos import lineas_automaticas_por_destino
 from app.modules.companies.services import CompanyService
 from app.modules.accounting.schemas import (
     LibroDiarioCreate,
@@ -281,14 +282,84 @@ class LibroDiarioService:
             
             # Agregar asiento
             asiento_creado = await self.repository.agregar_asiento(libro_id, asiento_dict)
-            
+
             logger.info(f"Asiento agregado: {asiento_creado['id']} al libro {libro_id}")
-            
+
+            # Cuentas autogeneradas (cargo/abono): si la cuenta usada las
+            # tiene configuradas, se generan además sus líneas espejo, en el
+            # mismo libro y bajo el mismo numeroAsiento. Es un efecto
+            # secundario: si falla, no debe tumbar la creación del asiento
+            # que el usuario sí pidió y que ya quedó guardado.
+            try:
+                await self._generar_lineas_automaticas(libro_id, asiento_creado, usuario_id)
+            except Exception as e:
+                logger.error(
+                    f"[AUTO_DESTINO] No se pudieron generar las líneas automáticas "
+                    f"para el asiento {asiento_creado.get('id')}: {e}"
+                )
+
             return AsientoContableResponse(**asiento_creado)
-            
+
         except Exception as e:
             logger.error(f"Error al agregar asiento al libro {libro_id}: {str(e)}")
             raise
+
+    async def _generar_lineas_automaticas(
+        self,
+        libro_id: str,
+        asiento_creado: Dict[str, Any],
+        usuario_id: Optional[str] = None,
+    ) -> None:
+        """
+        Genera las líneas espejo de cargo/abono configuradas en el Plan de
+        Cuentas para la cuenta que se acaba de usar, si tiene alguna.
+
+        No se llama a sí misma para las líneas que genera (se insertan por
+        `self.repository.agregar_asiento` directamente, no por
+        `self.agregar_asiento`), así que no hay riesgo de encadenarse.
+        """
+        codigo_origen = (asiento_creado.get("cuentaContable") or {}).get("codigo")
+        if not codigo_origen:
+            return
+
+        monto = asiento_creado.get("debe") or asiento_creado.get("haber") or 0
+        lineas = await lineas_automaticas_por_destino(self.plan_contable_repo, codigo_origen, monto)
+        if not lineas:
+            return
+
+        grupo = asiento_creado.get("numeroAsiento") or asiento_creado.get("numeroCorrelativo")
+        empresa_id = asiento_creado.get("empresaId")
+
+        # El correlativo se deriva del de la línea original en vez de pedir
+        # "el siguiente" al contador compartido (`obtener_siguiente_correlativo`):
+        # ese contador asume un formato numérico puro y, con el formato real
+        # que manda el frontend ("0001-1"), siempre caía a "000001" y chocaba
+        # con el índice único (empresaId, numeroCorrelativo) en la segunda
+        # línea autogenerada. Un sufijo derivado del correlativo que ya se
+        # insertó con éxito es único por construcción, sin depender de ningún
+        # esquema de numeración externo.
+        base_correlativo = asiento_creado.get("numeroCorrelativo") or grupo
+        for indice, linea in enumerate(lineas, start=1):
+            correlativo = f"{base_correlativo}-auto{indice}"
+            documento = {
+                "empresaId": empresa_id,
+                "numeroCorrelativo": correlativo,
+                "numeroAsiento": grupo,
+                "fecha": asiento_creado["fecha"],
+                "glosa": f"{asiento_creado.get('glosa', '')} (auto: destino de {codigo_origen})",
+                "codigoLibro": asiento_creado.get("codigoLibro", "5.1"),
+                "numeroDocumento": asiento_creado.get("numeroDocumento", ""),
+                "cuentaContable": linea["cuentaContable"],
+                "debe": linea["debe"],
+                "haber": linea["haber"],
+                "origen": "AUTO_DESTINO",
+                "usuarioCreacion": usuario_id,
+            }
+            await self.repository.agregar_asiento(libro_id, documento)
+            logger.info(
+                f"[AUTO_DESTINO] Línea generada desde {codigo_origen}: "
+                f"{linea['cuentaContable'].get('codigo')} debe={linea['debe']} haber={linea['haber']}"
+            )
     
     async def actualizar_asiento(
         self, 

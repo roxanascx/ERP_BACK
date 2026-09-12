@@ -9,9 +9,11 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...database import get_database
+from . import catalogos
 from .schemas import (
     CuentaCajaBancoCreate,
     CuentaCajaBancoUpdate,
+    DocumentoTipo,
     MovimientoCajaBancoCreate,
 )
 from .services import (
@@ -125,6 +127,31 @@ async def listar_movimientos(
         raise HTTPException(status_code=500, detail=f"Error listando movimientos: {e}")
 
 
+@router.get(
+    "/pendientes",
+    summary="Documentos pendientes de pago/cobro",
+    description=(
+        "Cruza Registro de Compras/Ventas con las aplicaciones de pago ya registradas. "
+        "Con socio_negocio_id, solo los de ese proveedor/cliente; sin él, TODOS los "
+        "pendientes de la empresa, para poder pagar/cobrar en bloque."
+    ),
+)
+async def listar_pendientes(
+    empresa_id: str = Query(..., description="RUC de la empresa"),
+    tipo: DocumentoTipo = Query(..., description="COMPRA (pagos) o VENTA (cobros)"),
+    socio_negocio_id: Optional[str] = Query(
+        None, description="ID del socio de negocio; si se omite, se listan todos"
+    ),
+    service: CajaBancoService = Depends(get_caja_banco_service),
+) -> Dict[str, Any]:
+    try:
+        pendientes = await service.listar_pendientes(empresa_id, tipo, socio_negocio_id)
+        return {"exitoso": True, "total": len(pendientes), "pendientes": pendientes}
+    except Exception as e:
+        logger.exception(f"Error listando pendientes de {empresa_id}")
+        raise HTTPException(status_code=500, detail=f"Error listando pendientes: {e}")
+
+
 @router.post("/movimientos", summary="Registrar un pago o cobro", status_code=201)
 async def crear_movimiento(
     datos: MovimientoCajaBancoCreate,
@@ -170,3 +197,22 @@ async def deshacer_lote(
         return {"exitoso": True, **resultado}
     except CajaBancoError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ----------------------------------------------------------------------
+# Catálogos (lectura simple, datos estáticos)
+# ----------------------------------------------------------------------
+
+@router.get("/catalogos/tipo-documento", summary="Catálogo de Tipo de Documento (Tabla 10 SUNAT)")
+async def catalogo_tipo_documento() -> Dict[str, Any]:
+    return {"exitoso": True, "items": catalogos.TIPOS_DOCUMENTO}
+
+
+@router.get("/catalogos/medio-pago", summary="Catálogo de Medio de Pago (bancarización)")
+async def catalogo_medio_pago() -> Dict[str, Any]:
+    return {"exitoso": True, "items": catalogos.MEDIOS_PAGO}
+
+
+@router.get("/catalogos/flujo-efectivo", summary="Catálogo de clasificación de Flujo de Efectivo")
+async def catalogo_flujo_efectivo() -> Dict[str, Any]:
+    return {"exitoso": True, "items": catalogos.FLUJOS_EFECTIVO}

@@ -19,6 +19,7 @@ from .schemas import (
 )
 from .repositories import SocioNegocioRepository
 from .services import SocioNegocioService
+from .sincronizacion_sire import SincronizacionSociosSireService
 from .exceptions import (
     SocioNotFoundException, SocioAlreadyExistsException,
     SocioValidationException, RucConsultaException
@@ -319,6 +320,37 @@ async def get_stats(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "internal_error", "message": str(e)}
         )
+
+@router.post(
+    "/sincronizar-desde-sire",
+    summary="Crear/actualizar Socios de Negocio desde Registro de Compras y Ventas",
+    description=(
+        "Recorre TODO lo ya importado por SIRE y sincroniza cada proveedor/cliente. "
+        "Pensado para correrse una vez sobre datos históricos; las próximas "
+        "importaciones de SIRE ya sincronizan solas."
+    ),
+)
+async def sincronizar_desde_sire(
+    empresa_id: str = Query(..., description="RUC de la empresa"),
+    db: AsyncIOMotorDatabase = Depends(get_database_async),
+):
+    try:
+        sincronizador = SincronizacionSociosSireService(SocioNegocioRepository(db))
+        resultado = await sincronizador.sincronizar_backfill(empresa_id, db)
+        return {
+            "exitoso": True,
+            "mensaje": (
+                f"{resultado['creados']} creados, {resultado['actualizados']} "
+                f"actualizados, {resultado['omitidos']} omitidos"
+            ),
+            **resultado,
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "internal_error", "message": str(e)}
+        )
+
 
 @router.post(
     "/consulta-ruc",

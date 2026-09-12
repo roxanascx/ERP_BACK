@@ -13,7 +13,7 @@ if ROOT not in sys.path:
 
 from app.modules.accounting.services import PlanContableServiceAdapter
 from app.modules.accounting.repositories import AccountingRepository
-from app.models.plan_contable import CuentaContableCreate, CuentaContableResponse
+from app.models.plan_contable import CuentaContableCreate, CuentaContableUpdate, CuentaContableResponse
 
 
 class MockRepository:
@@ -84,6 +84,12 @@ class MockRepository:
     async def insert_cuenta(self, documento):
         self.data[documento["codigo"]] = documento
         return type('Result', (), {'inserted_id': 'mock_id'})
+
+    async def update_cuenta(self, codigo, update_data):
+        if codigo in self.data:
+            self.data[codigo].update(update_data)
+            return type('Result', (), {'modified_count': 1})
+        return type('Result', (), {'modified_count': 0})
 
     async def count_documents(self, filtros=None):
         return len(await self.list_cuentas(filtros))
@@ -203,6 +209,97 @@ def test_doc_to_response():
     assert response.codigo == "101"
     assert response.descripcion == "Test"
     assert response.naturaleza == "DEUDORA"
+
+
+# ---------------------------------------------------------------------------
+# Cuentas autogeneradas (cargo/abono destino)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_crear_cuenta_con_destino_valido():
+    """La cuenta cargo/abono existe y acepta movimiento: se crea sin problema."""
+    mock_repo = MockRepository()
+    service = PlanContableServiceAdapter(mock_repo)
+
+    nueva_cuenta = CuentaContableCreate(
+        codigo="102",
+        descripcion="Fondos fijos",
+        nivel=3,
+        clase_contable=1,
+        cuenta_cargo_destino={"codigo": "101", "denominacion": "Caja"},
+    )
+
+    resultado = await service.crear_cuenta(nueva_cuenta)
+    assert resultado.cuenta_cargo_destino == {"codigo": "101", "denominacion": "Caja"}
+
+
+@pytest.mark.asyncio
+async def test_crear_cuenta_destino_inexistente_falla():
+    mock_repo = MockRepository()
+    service = PlanContableServiceAdapter(mock_repo)
+
+    nueva_cuenta = CuentaContableCreate(
+        codigo="102",
+        descripcion="Fondos fijos",
+        nivel=3,
+        clase_contable=1,
+        cuenta_abono_destino={"codigo": "999", "denominacion": "No existe"},
+    )
+
+    with pytest.raises(ValueError, match="no existe en el Plan de Cuentas"):
+        await service.crear_cuenta(nueva_cuenta)
+
+
+@pytest.mark.asyncio
+async def test_crear_cuenta_destino_que_no_acepta_movimiento_falla():
+    """"10" es una cuenta agrupadora (acepta_movimiento=False) en el mock."""
+    mock_repo = MockRepository()
+    service = PlanContableServiceAdapter(mock_repo)
+
+    nueva_cuenta = CuentaContableCreate(
+        codigo="102",
+        descripcion="Fondos fijos",
+        nivel=3,
+        clase_contable=1,
+        cuenta_cargo_destino={"codigo": "10", "denominacion": "Efectivo y equivalentes"},
+    )
+
+    with pytest.raises(ValueError, match="no acepta movimientos"):
+        await service.crear_cuenta(nueva_cuenta)
+
+
+@pytest.mark.asyncio
+async def test_crear_cuenta_destino_autorreferencia_falla():
+    mock_repo = MockRepository()
+    service = PlanContableServiceAdapter(mock_repo)
+
+    nueva_cuenta = CuentaContableCreate(
+        codigo="102",
+        descripcion="Fondos fijos",
+        nivel=3,
+        clase_contable=1,
+        cuenta_cargo_destino={"codigo": "102", "denominacion": "Fondos fijos"},
+    )
+
+    with pytest.raises(ValueError, match="no puede ser la misma cuenta"):
+        await service.crear_cuenta(nueva_cuenta)
+
+
+@pytest.mark.asyncio
+async def test_actualizar_cuenta_permite_limpiar_destino():
+    """Enviar `null` explicito (exclude_unset, no exclude_none) borra el destino."""
+    mock_repo = MockRepository()
+    service = PlanContableServiceAdapter(mock_repo)
+    mock_repo.data["101"]["cuenta_cargo_destino"] = {"codigo": "10", "denominacion": "x"}
+    mock_repo.data["101"]["acepta_movimiento"] = True
+
+    cambios = CuentaContableUpdate(cuenta_cargo_destino=None)
+    # `exclude_unset` solo conserva lo que el modelo marca como set: al venir
+    # de un dict con la clave presente, pydantic lo cuenta como set.
+    assert "cuenta_cargo_destino" in cambios.model_fields_set
+
+    resultado = await service.actualizar_cuenta("101", cambios)
+    assert resultado.cuenta_cargo_destino is None
 
 
 if __name__ == "__main__":

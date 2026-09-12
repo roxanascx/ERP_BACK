@@ -23,6 +23,7 @@ class CajaBancoRepository:
         self.db = database
         self.cuentas = database["cuentas_caja_banco"]
         self.movimientos = database["movimientos_caja_banco"]
+        self.aplicaciones = database["aplicaciones_pago_caja_bancos"]
 
     async def asegurar_indices(self) -> None:
         try:
@@ -38,6 +39,10 @@ class CajaBancoRepository:
             await self.movimientos.create_index(
                 [("empresa_id", 1), ("lote_contabilizacion", 1)],
                 name="idx_empresa_lote_movimiento_caja_banco",
+            )
+            await self.aplicaciones.create_index(
+                [("documento_tipo", 1), ("documento_id", 1)],
+                name="idx_documento_aplicacion_pago",
             )
         except Exception as e:  # pragma: no cover - depende del estado de Mongo
             logger.warning(f"No se pudo crear índices de caja/bancos: {e}")
@@ -168,6 +173,33 @@ class CajaBancoRepository:
         resultado = await self.movimientos.insert_one(documento)
         documento["_id"] = resultado.inserted_id
         return self._limpiar(documento)
+
+    async def crear_aplicaciones(
+        self,
+        empresa_id: str,
+        movimiento_caja_banco_id: str,
+        documentos_aplicados: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Una fila por documento cancelado por este movimiento. El saldo
+        pendiente de cada documento se deriva sumando estas filas (ver
+        `pendientes.PendientesCajaBancoService`); nunca se escribe un campo
+        "saldo" en `registro_compras`/`registro_ventas`.
+        """
+        if not documentos_aplicados:
+            return
+        ahora = datetime.utcnow()
+        await self.aplicaciones.insert_many([
+            {
+                "empresa_id": empresa_id,
+                "movimiento_caja_banco_id": movimiento_caja_banco_id,
+                "documento_tipo": doc["documento_tipo"],
+                "documento_id": doc["documento_id"],
+                "monto_aplicado": doc["monto"],
+                "fecha_aplicacion": ahora,
+            }
+            for doc in documentos_aplicados
+        ])
 
     async def eliminar_movimiento(self, empresa_id: str, movimiento_id: str) -> bool:
         try:

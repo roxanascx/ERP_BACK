@@ -51,6 +51,13 @@ class CuentaContable(BaseModel):
     requiere_centro_costo: bool = False
     es_cuenta_caja: bool = False
     es_cuenta_bancaria: bool = False
+    # Asiento automático inmediato: al postear un movimiento en esta cuenta,
+    # se generan además estas dos líneas espejo por el mismo importe (cargo
+    # al debe, abono al haber). Validado en plan_contable_services; el motor
+    # que las dispara vive en el módulo que registre el asiento (aún no
+    # construido, ver plan de expansión de Contabilidad).
+    cuenta_cargo_destino: Optional[Dict[str, str]] = None
+    cuenta_abono_destino: Optional[Dict[str, str]] = None
     fecha_creacion: datetime = Field(default_factory=datetime.now)
     fecha_modificacion: Optional[datetime] = None
 
@@ -77,6 +84,8 @@ class CuentaContableCreate(BaseModel):
     requiere_centro_costo: bool = False
     es_cuenta_caja: bool = False
     es_cuenta_bancaria: bool = False
+    cuenta_cargo_destino: Optional[Dict[str, str]] = None
+    cuenta_abono_destino: Optional[Dict[str, str]] = None
 
 class CuentaContableUpdate(BaseModel):
     descripcion: Optional[str] = None
@@ -88,6 +97,8 @@ class CuentaContableUpdate(BaseModel):
     requiere_centro_costo: Optional[bool] = None
     es_cuenta_caja: Optional[bool] = None
     es_cuenta_bancaria: Optional[bool] = None
+    cuenta_cargo_destino: Optional[Dict[str, str]] = None
+    cuenta_abono_destino: Optional[Dict[str, str]] = None
 
 class CuentaContableResponse(BaseModel):
     id: str
@@ -109,6 +120,8 @@ class CuentaContableResponse(BaseModel):
     requiere_centro_costo: bool = False
     es_cuenta_caja: bool = False
     es_cuenta_bancaria: bool = False
+    cuenta_cargo_destino: Optional[Dict[str, str]] = None
+    cuenta_abono_destino: Optional[Dict[str, str]] = None
     tiene_hijos: bool = False
     fecha_creacion: datetime
     fecha_modificacion: Optional[datetime]

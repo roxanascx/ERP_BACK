@@ -56,6 +56,42 @@ class PlanContableServiceAdapter:
     def __init__(self, repository: Optional[AccountingRepository] = None):
         self.repo = repository or AccountingRepository()
 
+    async def _validar_cuentas_destino(
+        self,
+        codigo_cuenta: str,
+        cuenta_cargo_destino: Optional[Dict[str, Any]],
+        cuenta_abono_destino: Optional[Dict[str, Any]],
+    ) -> None:
+        """
+        El asiento automático inmediato (cargo/abono) solo puede apuntar a
+        cuentas que existan y acepten movimiento — igual que no se puede
+        contabilizar directamente en una cuenta que solo agrupa. Tampoco puede
+        apuntar a sí misma: eso generaría una línea espejo sobre la misma
+        cuenta que originó el movimiento.
+        """
+        for etiqueta, destino in (
+            ("cargo", cuenta_cargo_destino),
+            ("abono", cuenta_abono_destino),
+        ):
+            if not destino:
+                continue
+
+            codigo_destino = destino.get("codigo")
+            if not codigo_destino:
+                raise ValueError(f"La cuenta {etiqueta} automática debe traer un código")
+            if codigo_destino == codigo_cuenta:
+                raise ValueError(f"La cuenta {etiqueta} automática no puede ser la misma cuenta")
+
+            existente = await self.repo.find_by_codigo(codigo_destino)
+            if not existente:
+                raise ValueError(
+                    f"La cuenta {etiqueta} automática {codigo_destino} no existe en el Plan de Cuentas"
+                )
+            if not existente.get("acepta_movimiento", True):
+                raise ValueError(
+                    f"La cuenta {etiqueta} automática {codigo_destino} no acepta movimientos"
+                )
+
     async def list_cuentas(self, activos_solo: bool = True, clase_contable: Optional[int] = None, nivel: Optional[int] = None, empresa_id: str = None, tipo_plan: str = "estandar") -> List[CuentaContableResponse]:
         filtros = {}
         if activos_solo:
@@ -99,6 +135,9 @@ class PlanContableServiceAdapter:
         documento["fecha_creacion"] = datetime.now()
         documento["naturaleza"] = self._determinar_naturaleza(clase_contable)
         _validar_flags_cuenta(documento)
+        await self._validar_cuentas_destino(
+            payload.codigo, documento.get("cuenta_cargo_destino"), documento.get("cuenta_abono_destino")
+        )
 
         result = await self.repo.insert_cuenta(documento)
         created = await self.repo.find_by_codigo(documento["codigo"])
@@ -192,12 +231,18 @@ class PlanContableServiceAdapter:
         if not cuenta_existente:
             raise ValueError(f"No existe una cuenta con el código {codigo}")
 
-        # Preparar datos de actualización (solo lo que el cliente mandó)
-        update_data = payload.dict(exclude_none=True)
+        # Preparar datos de actualización (solo los campos que el cliente
+        # incluyó en el body; `exclude_unset` -a diferencia de `exclude_none`-
+        # deja mandar `null` a proposito para limpiar un destino ya configurado).
+        update_data = payload.dict(exclude_unset=True)
         update_data["fecha_modificacion"] = datetime.now()
 
         # Validar los flags nuevos contra el estado resultante (existente + cambios)
-        _validar_flags_cuenta({**cuenta_existente, **update_data})
+        combinado = {**cuenta_existente, **update_data}
+        _validar_flags_cuenta(combinado)
+        await self._validar_cuentas_destino(
+            codigo, combinado.get("cuenta_cargo_destino"), combinado.get("cuenta_abono_destino")
+        )
 
         # Actualizar
         result = await self.repo.update_cuenta(codigo, update_data)
@@ -259,6 +304,8 @@ class PlanContableServiceAdapter:
             requiere_centro_costo=documento.get("requiere_centro_costo", False),
             es_cuenta_caja=documento.get("es_cuenta_caja", False),
             es_cuenta_bancaria=documento.get("es_cuenta_bancaria", False),
+            cuenta_cargo_destino=documento.get("cuenta_cargo_destino"),
+            cuenta_abono_destino=documento.get("cuenta_abono_destino"),
             fecha_creacion=documento.get("fecha_creacion"),
             fecha_modificacion=documento.get("fecha_modificacion"),
         )
