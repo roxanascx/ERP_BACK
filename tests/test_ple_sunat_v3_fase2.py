@@ -3,7 +3,7 @@ Test Integración PLE SUNAT V3 - Fase 2
 ======================================
 
 Script de prueba para validar la integración completa de:
-- PLEFormatterSunatV3 (24 campos)
+- PLEFormatterSunatV3 (21 campos reales, verificados contra archivos PLE de SUNAT)
 - PLEZipGenerator (compresión SUNAT)
 - PLEGenerator (generación completa)
 
@@ -101,29 +101,31 @@ def crear_datos_prueba() -> List[Dict[str, Any]]:
     ]
 
 def test_formateador_sunat_v3():
-    """Test del formateador de 24 campos SUNAT V3"""
-    print("🧪 Test 1: PLEFormatterSunatV3 - Formateo de 24 campos")
+    """Test del formateador de 21 campos reales SUNAT V3"""
+    print("🧪 Test 1: PLEFormatterSunatV3 - Formateo de 21 campos")
     print("=" * 60)
-    
+
     formatter = PLEFormatterSunatV3()
     datos_prueba = crear_datos_prueba()
-    
+
     try:
         for i, asiento in enumerate(datos_prueba, 1):
             linea_formateada = formatter.formatear_linea_completa(asiento)
-            campos = linea_formateada.split('|')
-            
+            # La línea termina en "|", por lo que el último elemento del
+            # split es siempre una cadena vacía y no cuenta como campo real
+            campos = linea_formateada.split('|')[:-1]
+
             print(f"📝 Asiento {i}:")
-            print(f"   Cuenta: {campos[2]}")
-            print(f"   Debe: {campos[15]}")
-            print(f"   Haber: {campos[16]}")
+            print(f"   Cuenta: {campos[3]}")
+            print(f"   Debe: {campos[17]}")
+            print(f"   Haber: {campos[18]}")
             print(f"   Total campos: {len(campos)}")
             print(f"   Línea completa: {linea_formateada[:100]}...")
             print()
-            
-            # Validar 24 campos
-            assert len(campos) == 24, f"Esperaban 24 campos, obtenidos: {len(campos)}"
-        
+
+            # Validar 21 campos reales (verificados contra archivos PLE de SUNAT)
+            assert len(campos) == 21, f"Esperaban 21 campos, obtenidos: {len(campos)}"
+
         print("✅ Formateador SUNAT V3 funciona correctamente")
         return True
         
@@ -243,12 +245,68 @@ def test_integracion_completa():
         traceback.print_exc()
         return False
 
+def test_agrupacion_por_operacion():
+    """
+    Test del agrupamiento real de SUNAT: varias líneas de una misma operación
+    (mismo numero_asiento) deben compartir CUO y recibir correlativos con
+    prefijo de tipo de asiento que reinicia en 1 por grupo - replicando el
+    patrón observado en los archivos PLE reales (ej. CUO con M0001..M0009).
+    """
+    print("🧪 Test 4: Agrupamiento de líneas por operación (numero_asiento)")
+    print("=" * 60)
+
+    formatter = PLEFormatterSunatV3()
+
+    # Grupo 1: una operación con 3 líneas (numero_asiento compartido)
+    # Grupo 2: una operación distinta con 2 líneas
+    datos = [
+        {'numero_asiento': 'OP-1', 'periodo': '202512', 'codigo_cuenta_contable': '101101',
+         'glosa_descripcion': 'Cobro cliente', 'debe': 500.0, 'haber': 0.0},
+        {'numero_asiento': 'OP-1', 'periodo': '202512', 'codigo_cuenta_contable': '121101',
+         'glosa_descripcion': 'Cobro cliente', 'debe': 0.0, 'haber': 300.0},
+        {'numero_asiento': 'OP-1', 'periodo': '202512', 'codigo_cuenta_contable': '121102',
+         'glosa_descripcion': 'Cobro cliente', 'debe': 0.0, 'haber': 200.0},
+        {'numero_asiento': 'OP-2', 'periodo': '202512', 'codigo_cuenta_contable': '401111',
+         'glosa_descripcion': 'Pago tributo', 'debe': 100.0, 'haber': 0.0},
+        {'numero_asiento': 'OP-2', 'periodo': '202512', 'codigo_cuenta_contable': '101101',
+         'glosa_descripcion': 'Pago tributo', 'debe': 0.0, 'haber': 100.0},
+    ]
+
+    try:
+        lineas = formatter.formatear_lote_asientos(datos)
+        assert len(lineas) == 5, f"Esperaban 5 líneas, obtenidas: {len(lineas)}"
+
+        campos = [l.split('|') for l in lineas]
+
+        # Las 3 primeras líneas (OP-1) deben compartir CUO (campo 2, índice 1)
+        # y llevar correlativos M0001, M0002, M0003 (campo 3, índice 2)
+        cuo_grupo1 = {c[1] for c in campos[:3]}
+        assert len(cuo_grupo1) == 1, f"Las líneas de OP-1 deberían compartir CUO: {cuo_grupo1}"
+        assert [c[2] for c in campos[:3]] == ['M0001', 'M0002', 'M0003']
+
+        # Las 2 últimas líneas (OP-2) deben compartir un CUO distinto al de
+        # OP-1, y su correlativo debe reiniciar en M0001
+        cuo_grupo2 = {c[1] for c in campos[3:]}
+        assert len(cuo_grupo2) == 1, f"Las líneas de OP-2 deberían compartir CUO: {cuo_grupo2}"
+        assert cuo_grupo2 != cuo_grupo1, "OP-1 y OP-2 no deberían compartir el mismo CUO"
+        assert [c[2] for c in campos[3:]] == ['M0001', 'M0002']
+
+        print(f"   CUO grupo OP-1: {cuo_grupo1.pop()} -> correlativos M0001..M0003")
+        print(f"   CUO grupo OP-2: {cuo_grupo2.pop()} -> correlativos M0001..M0002")
+        print("✅ Agrupamiento por operación funciona correctamente")
+        return True
+
+    except Exception as e:
+        print(f"❌ Error en agrupamiento por operación: {str(e)}")
+        return False
+
+
 def main():
     """Ejecutar todas las pruebas"""
     print("🚀 INICIANDO TESTS FASE 2 - PLE SUNAT V3")
     print("=" * 60)
     print("Validando integración completa de:")
-    print("- PLEFormatterSunatV3 (24 campos oficiales)")
+    print("- PLEFormatterSunatV3 (21 campos reales)")
     print("- PLEZipGenerator (compresión SUNAT)")
     print("- PLEGenerator (flujo completo)")
     print("=" * 60)
@@ -267,7 +325,11 @@ def main():
     # Test 3: Integración completa
     resultados.append(test_integracion_completa())
     print()
-    
+
+    # Test 4: Agrupamiento por operación (numero_asiento)
+    resultados.append(test_agrupacion_por_operacion())
+    print()
+
     # Resumen final
     print("📊 RESUMEN DE RESULTADOS")
     print("=" * 60)
@@ -279,7 +341,7 @@ def main():
     if tests_pasados == total_tests:
         print("🎉 TODOS LOS TESTS PASARON - FASE 2 COMPLETADA")
         print("\nCaracterísticas validadas:")
-        print("- ✅ Formateo de 24 campos oficial SUNAT")
+        print("- ✅ Formateo de 21 campos reales SUNAT")
         print("- ✅ Generación de archivos ZIP conformes")
         print("- ✅ Nomenclatura oficial de archivos")
         print("- ✅ Integración completa del flujo")

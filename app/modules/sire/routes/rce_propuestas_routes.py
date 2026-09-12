@@ -6,7 +6,6 @@ Basado en Manual SUNAT SIRE Compras v27.0
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from pydantic import BaseModel
-import httpx
 
 from ....database import get_database
 from ....shared.exceptions import SireException, SireValidationException
@@ -15,6 +14,9 @@ from ..services.auth_service import SireAuthService
 from ..services.rce_compras_service import RceComprasService
 from ..services.rce_propuesta_service import RcePropuestaService
 from ..models.rce import RceEstadoProceso
+from ..services import sunat_endpoints as sunat_ep
+from ..services.sunat_endpoints import CodLibro, CodOrigenEnvio, CodTipoArchivo, CodTipoResumen
+from ..utils.exceptions import SireApiException, SireAuthException, SunatValidationException
 from ..schemas.rce_schemas import (
     RcePropuestaGenerarRequest, RcePropuestaResponse,
     RceApiResponse
@@ -553,245 +555,150 @@ async def consultar_estado_sunat(
 
 
 # ========================================
-# 🔥 ENDPOINTS DIRECTOS - IGUAL A TUS SCRIPTS
+# CONSULTAS DIRECTAS A SUNAT
 # ========================================
+# Estos tres endpoints devuelven el ticket en el momento, sin esperar a que
+# SUNAT termine: la UI consulta el estado después con /sunat/tickets. Por eso
+# no usan `ejecutar_operacion_con_ticket`, que sí espera al resultado.
 
-import httpx
 
 @router.get(
     "/sunat/propuestas",
-    summary="🚀 SUNAT DIRECTO - Generar ticket propuesta",
-    description="Genera ticket de propuesta usando API SUNAT directamente (igual a tu script)"
+    summary="Generar ticket de propuesta en SUNAT",
+    description="Servicio 5.34: solicita la exportación de la propuesta y devuelve el numTicket"
 )
 async def generar_ticket_propuesta_sunat_directo(
     ruc: str = Query(..., description="RUC de la empresa"),
-    periodo: str = Query(..., description="Período tributario YYYYMM")
+    periodo: str = Query(..., description="Período tributario YYYYMM"),
+    service: RcePropuestaService = Depends(get_rce_propuesta_service)
 ):
-    """Genera ticket de propuesta usando la misma lógica que tu script test_api_v27.py"""
-    
-    # CREDENCIALES HARDCODEADAS - IGUALES A TU SCRIPT
-    usuario = "THENTHIP"
-    clave_sol = "enteatell"
-    client_id = "aa3f9b5c-7013-4ded-a63a-5ee658ce3530"
-    client_secret = "MOIzbzE3lAj/W5EkokXEbA=="
-    
+    """5.34 Solicitar la propuesta del periodo. Devuelve el ticket para seguirla."""
     try:
-        # PASO 1: OBTENER TOKEN - IGUAL A TU SCRIPT
-        token_url = f"https://api-seguridad.sunat.gob.pe/v1/clientessol/{client_id}/oauth2/token/"
-        token_data = {
-            'grant_type': 'password',
-            'scope': 'https://api-sire.sunat.gob.pe',
-            'client_id': client_id,
-            'client_secret': client_secret,
-            'username': f"{ruc}{usuario}",
-            'password': clave_sol
+        token = await service.auth_service.obtener_token_valido(ruc)
+
+        params = {
+            "codTipoArchivo": CodTipoArchivo.TXT,
+            "codOrigenEnvio": CodOrigenEnvio.SERVICIO_API,
         }
-        token_headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            token_response = await client.post(token_url, data=token_data, headers=token_headers)
-            
-            if token_response.status_code != 200:
-                raise HTTPException(
-                    status_code=401, 
-                    detail=f"Error obteniendo token: {token_response.status_code} - {token_response.text}"
-                )
-            
-            token = token_response.json()['access_token']
-            
-            # PASO 2: GENERAR TICKET - URL EXACTA DE TU SCRIPT
-            propuesta_url = f"https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rce/propuesta/web/propuesta/{periodo}/exportacioncomprobantepropuesta"
-            
-            propuesta_params = {
-                'codTipoArchivo': '0',  # TXT
-                'codOrigenEnvio': '2'   # Servicio Web
-            }
-            
-            propuesta_headers = {
-                'Authorization': f'Bearer {token}',
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            }
-            
-            propuesta_response = await client.get(
-                propuesta_url, 
-                headers=propuesta_headers, 
-                params=propuesta_params
-            )
-            
-            if propuesta_response.status_code == 200:
-                data = propuesta_response.json()
-                return {
-                    "exitoso": True,
-                    "mensaje": "Ticket generado exitosamente",
-                    "datos": data,
-                    "ticket_id": data.get('numTicket'),
-                    "url_usada": propuesta_url,
-                    "parametros": propuesta_params
-                }
-            else:
-                return {
-                    "exitoso": False,
-                    "mensaje": f"Error de SUNAT: {propuesta_response.status_code}",
-                    "detalle": propuesta_response.text,
-                    "url_usada": propuesta_url
-                }
-                
+        url = sunat_ep.descargar_propuesta(periodo)
+        datos = await service.api_client.get_json(url, token, params=params)
+
+        return {
+            "exitoso": True,
+            "mensaje": "Ticket generado exitosamente",
+            "datos": datos,
+            "ticket_id": datos.get("numTicket"),
+            "url_usada": url,
+            "parametros": params,
+        }
+
+    except SunatValidationException as e:
+        return {"exitoso": False, "mensaje": str(e), "errores": e.errors}
+    except SireAuthException as e:
+        raise HTTPException(
+            status_code=401,
+            detail=f"No se pudo autenticar con SUNAT para el RUC {ruc}: {e}"
+        )
+    except SireApiException as e:
+        return {"exitoso": False, "mensaje": f"Error de SUNAT: {e}"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error interno del servidor: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error interno del servidor: {e}")
 
 
 @router.get(
     "/sunat/tickets",
-    summary="🎫 SUNAT DIRECTO - Consultar tickets",
-    description="Consulta tickets usando API SUNAT directamente (igual a tu script)"
+    summary="Consultar tickets en SUNAT",
+    description="Servicio 5.31: estado de los tickets del contribuyente en un rango de periodos"
 )
 async def consultar_tickets_sunat_directo(
     ruc: str = Query(..., description="RUC de la empresa"),
     periodo_ini: str = Query(..., description="Período inicial YYYYMM"),
     periodo_fin: str = Query(..., description="Período final YYYYMM"),
     page: int = Query(1, description="Número de página"),
-    per_page: int = Query(20, description="Elementos por página")
+    per_page: int = Query(20, description="Elementos por página"),
+    service: RcePropuestaService = Depends(get_rce_propuesta_service)
 ):
-    """Consulta tickets usando la misma lógica que tu script test_api_v27.py"""
-    
-    # CREDENCIALES HARDCODEADAS - IGUALES A TU SCRIPT
-    usuario = "THENTHIP"
-    clave_sol = "enteatell"
-    client_id = "aa3f9b5c-7013-4ded-a63a-5ee658ce3530"
-    client_secret = "MOIzbzE3lAj/W5EkokXEbA=="
-    
+    """5.31 Consultar el estado de los tickets del RUC."""
     try:
-        # PASO 1: OBTENER TOKEN - IGUAL A TU SCRIPT
-        token_url = f"https://api-seguridad.sunat.gob.pe/v1/clientessol/{client_id}/oauth2/token/"
-        token_data = {
-            'grant_type': 'password',
-            'scope': 'https://api-sire.sunat.gob.pe',
-            'client_id': client_id,
-            'client_secret': client_secret,
-            'username': f"{ruc}{usuario}",
-            'password': clave_sol
+        token = await service.auth_service.obtener_token_valido(ruc)
+
+        params = {
+            "perIni": periodo_ini,
+            "perFin": periodo_fin,
+            "page": page,
+            "perPage": per_page,
+            "codLibro": CodLibro.RCE,
+            "codOrigenEnvio": CodOrigenEnvio.SERVICIO_API,
         }
-        token_headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            token_response = await client.post(token_url, data=token_data, headers=token_headers)
-            
-            if token_response.status_code != 200:
-                raise HTTPException(
-                    status_code=401, 
-                    detail=f"Error obteniendo token: {token_response.status_code} - {token_response.text}"
-                )
-            
-            token = token_response.json()['access_token']
-            
-            # PASO 2: CONSULTAR TICKETS - URL EXACTA DE TU SCRIPT
-            tickets_url = "https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rvierce/gestionprocesosmasivos/web/masivo/consultaestadotickets"
-            
-            tickets_params = {
-                'perIni': periodo_ini,
-                'perFin': periodo_fin,
-                'page': page,
-                'perPage': per_page,
-                'codLibro': '080000',
-                'codOrigenEnvio': '2'
-            }
-            
-            tickets_headers = {
-                'Authorization': f'Bearer {token}',
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            }
-            
-            tickets_response = await client.get(
-                tickets_url, 
-                headers=tickets_headers, 
-                params=tickets_params
-            )
-            
-            if tickets_response.status_code == 200:
-                data = tickets_response.json()
-                return {
-                    "exitoso": True,
-                    "mensaje": "Tickets consultados exitosamente",
-                    "datos": data,
-                    "total_registros": data.get('paginacion', {}).get('totalRegistros', 0),
-                    "url_usada": tickets_url,
-                    "parametros": tickets_params
-                }
-            else:
-                return {
-                    "exitoso": False,
-                    "mensaje": f"Error de SUNAT: {tickets_response.status_code}",
-                    "detalle": tickets_response.text,
-                    "url_usada": tickets_url
-                }
-                
+        url = sunat_ep.consultar_estado_tickets()
+        datos = await service.api_client.get_json(url, token, params=params)
+
+        return {
+            "exitoso": True,
+            "mensaje": "Tickets consultados exitosamente",
+            "datos": datos,
+            "total_registros": datos.get("paginacion", {}).get("totalRegistros", 0),
+            "url_usada": url,
+            "parametros": params,
+        }
+
+    except SunatValidationException as e:
+        return {"exitoso": False, "mensaje": str(e), "errores": e.errors}
+    except SireAuthException as e:
+        raise HTTPException(
+            status_code=401,
+            detail=f"No se pudo autenticar con SUNAT para el RUC {ruc}: {e}"
+        )
+    except SireApiException as e:
+        return {"exitoso": False, "mensaje": f"Error de SUNAT: {e}"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error interno del servidor: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error interno del servidor: {e}")
 
 
 @router.get(
     "/sunat/resumen",
-    summary="Consulta directa de resumen SUNAT",
-    description="Consulta directa al endpoint de resumen de SUNAT SIRE v27 - descarga archivos de período completo"
+    summary="Consultar resumen del periodo en SUNAT",
+    description="Servicio 5.35: descarga directa del resumen, sin pasar por ticket"
 )
 async def consultar_resumen_sunat_directo(
     ruc: str = Query(..., description="RUC de la empresa"),
-    per_tributario: str = Query(..., description="Período tributario (AAAAMMDD)", regex=r"^\d{6}$"),
-    opcion: str = Query("1", description="Opción de consulta (1=General, 2=Detalle, 3=Errores)"),
+    per_tributario: str = Query(..., description="Período tributario YYYYMM", pattern=r"^\d{6}$"),
+    cod_tipo_resumen: str = Query(
+        CodTipoResumen.PROPUESTA,
+        description="1 propuesta, 2 preliminar, 3 incluidos/excluidos, 4 registro, "
+                    "5 preliminar registrado, 6 ajustes posteriores, 7 no domiciliados",
+    ),
     service: RcePropuestaService = Depends(get_rce_propuesta_service)
 ):
-    """
-    Consulta directa al endpoint de resumen de SUNAT para RCE
-    """
+    """5.35 Descargar el resumen del periodo."""
     try:
-        # Obtener token vigente usando token_manager (ahora con la colección correcta)
-        token = await service.auth_service.token_manager.get_valid_token(ruc)
-        if not token:
-            raise HTTPException(status_code=401, detail="No se pudo obtener token SUNAT")
+        token = await service.auth_service.obtener_token_valido(ruc)
 
-        # Parámetros según el manual v27
-        resumen_params = {
-            'codLibro': '080000'  # Código para RCE según manual v27
+        contenido = await service.api_client.descargar_resumen(
+            token,
+            per_tributario=per_tributario,
+            cod_tipo_resumen=cod_tipo_resumen,
+            cod_tipo_archivo=CodTipoArchivo.TXT,
+        )
+
+        return {
+            "exitoso": True,
+            "mensaje": "Resumen obtenido correctamente",
+            "ruc": ruc,
+            "periodo": per_tributario,
+            "cod_tipo_resumen": cod_tipo_resumen,
+            "contenido_completo": contenido,
+            "total_lineas": len(contenido.strip().splitlines()),
         }
-        
-        # URL corregida según Manual SIRE Compras v27 - Servicio 5.35
-        # codTipoResumen: 1=Propuesta, 2=Preliminar, 3=No Incluidos, 4=Registro, 5=Preliminar registrado
-        cod_tipo_resumen = '1'  # Resumen de propuesta por defecto
-        cod_tipo_archivo = '0'  # TXT por defecto
-        
-        resumen_url = f'https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rvierce/resumen/web/resumencomprobantes/{per_tributario}/{cod_tipo_resumen}/{cod_tipo_archivo}/exporta'
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resumen_headers = {
-                'Authorization': f'Bearer {token}',
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            }
-            
-            resumen_response = await client.get(
-                resumen_url, 
-                headers=resumen_headers, 
-                params=resumen_params
-            )
-            
-            if resumen_response.status_code == 200:
-                data = resumen_response.json()
-                return {
-                    "exitoso": True,
-                    "mensaje": "Resumen consultado exitosamente",
-                    "datos": data,
-                    "url_usada": resumen_url,
-                    "parametros": resumen_params
-                }
-            else:
-                return {
-                    "exitoso": False,
-                    "mensaje": f"Error de SUNAT: {resumen_response.status_code}",
-                    "detalle": resumen_response.text,
-                    "url_usada": resumen_url
-                }
-                
+
+    except SunatValidationException as e:
+        return {"exitoso": False, "mensaje": str(e), "errores": e.errors}
+    except SireAuthException as e:
+        raise HTTPException(
+            status_code=401,
+            detail=f"No se pudo autenticar con SUNAT para el RUC {ruc}: {e}"
+        )
+    except SireApiException as e:
+        return {"exitoso": False, "mensaje": f"Error de SUNAT: {e}"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error interno del servidor: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error interno del servidor: {e}")

@@ -1,30 +1,37 @@
 """
-PLEFormatterSunatV3 - Formateador Oficial 19 Campos SUNAT - CORREGIDO
-====================================================================
+PLEFormatterSunatV3 - Formateador Libro Diario PLE 050100 SUNAT
+================================================================
 
-Formateador especializado para cumplir exactamente con la estructura
-oficial SUNAT de 19 campos para Libro Diario PLE formato 5.1.
+Formateador especializado para el Libro Diario PLE formato 5.1.
 
-*** CORRECCIÓN APLICADA: 24 campos → 19 campos oficiales ***
+*** CORRECCIÓN 2026-09: 19/24 campos → 21 campos reales ***
+Verificado campo por campo contra archivos PLE 050100 reales entregados
+por SUNAT (no contra la documentación, que resultó estar desalineada).
+El método realmente usado en producción es `formatear_linea_completa()`
+(invocado desde `PLEGenerator.generar_ple_zip_sunat_v3` y el endpoint de
+preview); el método basado en dataclass (`formatear_asiento_completo`)
+solo se usa hoy en scripts de test manuales.
 
 Basado en:
-- PLE_SUNAT_DOCUMENTACION_COMPLETA.md
+- Archivos PLE 050100/050200 reales entregados por SUNAT (referencia
+  definitiva usada para esta corrección)
 - Resolución de Superintendencia N° 286-2009/SUNAT
 
-Estructura oficial 19 campos PLE 050100 (Libro Diario):
-1. Período (AAAAMM)               2. Código único operación (CUO)
-3. Número correlativo             4. Código cuenta contable  
+Estructura real 21 campos PLE 050100 (Libro Diario):
+1. Período (AAAAMM+"00")          2. Código único operación (CUO)
+3. Número correlativo             4. Código cuenta contable
 5. Código unidad operación        6. Código centro costo
-7. Tipo moneda origen             8. Tipo documento sustento
-9. Serie comprobante              10. Número comprobante
-11. Fecha contable                12. Fecha vencimiento
-13. Fecha operación               14. Glosa descripción
-15. Referencia operación          16. Debe
-17. Haber                         18. Dato estructurado
-19. Estado operación
+7. Tipo moneda origen             8. Tipo documento identidad
+9. Número documento identidad     10. Tipo comprobante de pago
+11. Serie comprobante             12. Número comprobante
+13. Fecha contable                14. Fecha vencimiento
+15. Fecha operación               16. Glosa o descripción
+17. Referencia de la operación    18. Debe
+19. Haber                         20. Dato estructurado
+21. Estado operación
 
-Autor: Sistema ERP - Implementación SUNAT V3 CORREGIDA
-Fecha: Agosto 2025
+Autor: Sistema ERP - Implementación SUNAT V3
+Fecha: Agosto 2025 (corrección de campos: Septiembre 2026)
 """
 
 import re
@@ -33,6 +40,7 @@ from typing import Dict, List, Any, Optional, Union
 from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP
 from dataclasses import dataclass
+from collections import OrderedDict
 
 # Importar schemas directamente para evitar problemas circulares
 try:
@@ -49,35 +57,37 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PLELineaSunatV3:
-    """Línea PLE formateada según estructura oficial SUNAT 19 campos - CORREGIDO"""
-    
+    """Línea PLE formateada según la estructura real SUNAT de 21 campos"""
+
     # Datos originales
     asiento: AsientoContableSunatV3
     detalle: DetalleAsientoSunatV3
-    
-    # 19 CAMPOS OFICIALES SUNAT - LIBRO DIARIO PLE 050100
-    campo_01_periodo: str                    # Período AAAAMM
+
+    # 21 CAMPOS REALES SUNAT - LIBRO DIARIO PLE 050100
+    campo_01_periodo: str                    # Período AAAAMM+"00"
     campo_02_codigo_unico_operacion: str     # Código único de operación (CUO)
     campo_03_numero_correlativo: str         # Número correlativo del asiento
     campo_04_codigo_cuenta_contable: str     # Código de la cuenta contable
     campo_05_codigo_unidad_operacion: str    # Código de la unidad de operación
     campo_06_codigo_centro_costo: str        # Código del centro de costos
     campo_07_tipo_moneda_origen: str         # Tipo de moneda de origen
-    campo_08_tipo_documento_sustento: str    # Tipo de documento del sustento
-    campo_09_serie_comprobante: str          # Número de serie del comprobante
-    campo_10_numero_comprobante: str         # Número del comprobante
-    campo_11_fecha_contable: str             # Fecha contable
-    campo_12_fecha_vencimiento: str          # Fecha de vencimiento
-    campo_13_fecha_operacion: str            # Fecha de operación
-    campo_14_glosa_descripcion: str          # Glosa o descripción de la operación
-    campo_15_referencia_operacion: str       # Referencia de la operación
-    campo_16_debe: str                       # Debe
-    campo_17_haber: str                      # Haber
-    campo_18_dato_estructurado: str          # Dato estructurado
-    campo_19_estado_operacion: str           # Estado de la operación
-    
+    campo_08_tipo_documento_identidad: str   # Tipo de documento de identidad
+    campo_09_numero_documento_identidad: str # Número de documento de identidad
+    campo_10_tipo_comprobante_pago: str      # Tipo de comprobante de pago
+    campo_11_serie_comprobante: str          # Número de serie del comprobante
+    campo_12_numero_comprobante: str         # Número del comprobante
+    campo_13_fecha_contable: str             # Fecha contable
+    campo_14_fecha_vencimiento: str          # Fecha de vencimiento
+    campo_15_fecha_operacion: str            # Fecha de operación
+    campo_16_glosa_descripcion: str          # Glosa o descripción de la operación
+    campo_17_referencia_operacion: str       # Referencia de la operación
+    campo_18_debe: str                       # Debe
+    campo_19_haber: str                      # Haber
+    campo_20_dato_estructurado: str          # Dato estructurado
+    campo_21_estado_operacion: str           # Estado de la operación
+
     def to_ple_line(self) -> str:
-        """Convertir a línea PLE oficial separada por | - 19 CAMPOS OFICIALES SUNAT"""
+        """Convertir a línea PLE separada por | - 21 CAMPOS REALES SUNAT"""
         campos = [
             self.campo_01_periodo,
             self.campo_02_codigo_unico_operacion,
@@ -86,20 +96,22 @@ class PLELineaSunatV3:
             self.campo_05_codigo_unidad_operacion,
             self.campo_06_codigo_centro_costo,
             self.campo_07_tipo_moneda_origen,
-            self.campo_08_tipo_documento_sustento,
-            self.campo_09_serie_comprobante,
-            self.campo_10_numero_comprobante,
-            self.campo_11_fecha_contable,
-            self.campo_12_fecha_vencimiento,
-            self.campo_13_fecha_operacion,
-            self.campo_14_glosa_descripcion,
-            self.campo_15_referencia_operacion,
-            self.campo_16_debe,
-            self.campo_17_haber,
-            self.campo_18_dato_estructurado,
-            self.campo_19_estado_operacion
+            self.campo_08_tipo_documento_identidad,
+            self.campo_09_numero_documento_identidad,
+            self.campo_10_tipo_comprobante_pago,
+            self.campo_11_serie_comprobante,
+            self.campo_12_numero_comprobante,
+            self.campo_13_fecha_contable,
+            self.campo_14_fecha_vencimiento,
+            self.campo_15_fecha_operacion,
+            self.campo_16_glosa_descripcion,
+            self.campo_17_referencia_operacion,
+            self.campo_18_debe,
+            self.campo_19_haber,
+            self.campo_20_dato_estructurado,
+            self.campo_21_estado_operacion
         ]
-        
+
         return "|".join(campos) + "|"
 
 
@@ -167,76 +179,82 @@ class PLEFormatterSunatV3:
         periodo_aaaammdd: str
     ) -> PLELineaSunatV3:
         """
-        Formatear un detalle individual a línea PLE oficial - 19 CAMPOS SUNAT
-        
+        Formatear un detalle individual a línea PLE - 21 CAMPOS REALES SUNAT
+
         Args:
             asiento: Asiento contable completo
             detalle: Detalle específico a formatear
             codigo_unico_base: Código único base del asiento
             numero_detalle: Número del detalle (1, 2, 3...)
-            periodo_aaaammdd: Período formato AAAAMMDD
-            
+            periodo_aaaammdd: Período (se normaliza internamente a AAAAMM+"00")
+
         Returns:
-            PLELineaSunatV3: Línea completamente formateada con 19 campos oficiales
+            PLELineaSunatV3: Línea completamente formateada con 21 campos reales
         """
-        
-        # CAMPO 1: Período (AAAAMM)
-        campo_01 = periodo_aaaammdd[:6]  # Solo AAAAMM, no AAAAMMDD
-        
+
+        # CAMPO 1: Período (AAAAMM + "00", formato real de SUNAT)
+        campo_01 = self._formatear_periodo_sunat(periodo_aaaammdd)
+
         # CAMPO 2: Código único operación (CUO)
         campo_02 = f"{codigo_unico_base}{numero_detalle:02d}"
-        
+
         # CAMPO 3: Número correlativo asiento
         campo_03 = f"{asiento.numero.zfill(10)}"
-        
+
         # CAMPO 4: Código cuenta contable
         campo_04 = self._formatear_codigo_cuenta(detalle.codigoCuenta)
-        
+
         # CAMPO 5: Código unidad operación (opcional)
         campo_05 = self._formatear_codigo_unidad_operacion(getattr(detalle, 'codigoUnidadOperacion', ''))
-        
+
         # CAMPO 6: Código centro costo (opcional)
         campo_06 = self._formatear_codigo_centro_costo(getattr(detalle, 'codigoCentroCosto', ''))
-        
+
         # CAMPO 7: Tipo moneda origen
         campo_07 = self._formatear_tipo_moneda(getattr(detalle, 'tipoMonedaOrigen', 'PEN'))
-        
-        # CAMPO 8: Tipo documento sustento (opcional)
-        campo_08 = self._formatear_tipo_documento_sustento(getattr(detalle, 'tipoDocumentoSustento', ''))
-        
-        # CAMPO 9: Serie comprobante (opcional)
-        campo_09 = self._formatear_serie_comprobante(getattr(detalle, 'serieComprobante', ''))
-        
-        # CAMPO 10: Número comprobante (opcional)
-        campo_10 = self._formatear_numero_comprobante(getattr(detalle, 'numeroComprobante', ''))
-        
-        # CAMPO 11: Fecha contable
-        campo_11 = self._formatear_fecha_contable(asiento.fecha)
-        
-        # CAMPO 12: Fecha vencimiento (opcional)
-        campo_12 = self._formatear_fecha_vencimiento(getattr(detalle, 'fechaVencimiento', ''))
-        
-        # CAMPO 13: Fecha operación
-        campo_13 = self._formatear_fecha_operacion(asiento.fecha)
-        
-        # CAMPO 14: Glosa o descripción
-        campo_14 = self._formatear_glosa_descripcion(detalle.descripcion)
-        
-        # CAMPO 15: Referencia operación (opcional)
-        campo_15 = self._formatear_referencia_operacion(getattr(detalle, 'referenciaOperacion', ''))
-        
-        # CAMPO 16: Debe
-        campo_16 = self._formatear_monto_debe(detalle.debe)
-        
-        # CAMPO 17: Haber
-        campo_17 = self._formatear_monto_haber(detalle.haber)
-        
-        # CAMPO 18: Dato estructurado (normalmente vacío)
-        campo_18 = self._formatear_dato_estructurado("")
-        
-        # CAMPO 19: Estado operación
-        campo_19 = self._formatear_estado_operacion(getattr(asiento, 'estadoOperacion', '1'))
-        
+
+        # CAMPO 8: Tipo documento identidad (opcional)
+        campo_08 = self._formatear_tipo_documento_identidad(getattr(detalle, 'tipoDocumentoIdentidad', ''))
+
+        # CAMPO 9: Número documento identidad (opcional)
+        campo_09 = self._formatear_numero_documento_identidad(getattr(detalle, 'numeroDocumentoIdentidad', ''))
+
+        # CAMPO 10: Tipo comprobante de pago (opcional)
+        campo_10 = self._formatear_tipo_comprobante_pago(getattr(detalle, 'tipoComprobantePago', ''))
+
+        # CAMPO 11: Serie comprobante (opcional)
+        campo_11 = self._formatear_numero_serie_comprobante(getattr(detalle, 'numeroSerieComprobante', ''))
+
+        # CAMPO 12: Número comprobante (opcional)
+        campo_12 = self._formatear_numero_comprobante_pago(getattr(detalle, 'numeroComprobantePago', ''))
+
+        # CAMPO 13: Fecha contable (prioriza la del detalle; si no, la del asiento)
+        campo_13 = self._formatear_fecha_contable(getattr(detalle, 'fechaContable', None) or asiento.fecha)
+
+        # CAMPO 14: Fecha vencimiento (opcional)
+        campo_14 = self._formatear_fecha_vencimiento(getattr(detalle, 'fechaVencimiento', ''))
+
+        # CAMPO 15: Fecha operación (prioriza la del detalle; si no, la del asiento)
+        campo_15 = self._formatear_fecha_operacion(getattr(detalle, 'fechaOperacion', None) or asiento.fecha)
+
+        # CAMPO 16: Glosa o descripción
+        campo_16 = self._formatear_glosa_descripcion(detalle.descripcion)
+
+        # CAMPO 17: Referencia de la operación (opcional)
+        campo_17 = self._formatear_glosa_referencial(getattr(detalle, 'glosaReferencial', ''))
+
+        # CAMPO 18: Debe
+        campo_18 = self._formatear_monto_debe(detalle.debe)
+
+        # CAMPO 19: Haber
+        campo_19 = self._formatear_monto_haber(detalle.haber)
+
+        # CAMPO 20: Dato estructurado (normalmente vacío)
+        campo_20 = self._formatear_dato_estructurado("")
+
+        # CAMPO 21: Estado operación
+        campo_21 = self._formatear_estado_operacion(getattr(asiento, 'estadoOperacion', '1'))
+
         return PLELineaSunatV3(
             asiento=asiento,
             detalle=detalle,
@@ -247,18 +265,20 @@ class PLEFormatterSunatV3:
             campo_05_codigo_unidad_operacion=campo_05,
             campo_06_codigo_centro_costo=campo_06,
             campo_07_tipo_moneda_origen=campo_07,
-            campo_08_tipo_documento_sustento=campo_08,
-            campo_09_serie_comprobante=campo_09,
-            campo_10_numero_comprobante=campo_10,
-            campo_11_fecha_contable=campo_11,
-            campo_12_fecha_vencimiento=campo_12,
-            campo_13_fecha_operacion=campo_13,
-            campo_14_glosa_descripcion=campo_14,
-            campo_15_referencia_operacion=campo_15,
-            campo_16_debe=campo_16,
-            campo_17_haber=campo_17,
-            campo_18_dato_estructurado=campo_18,
-            campo_19_estado_operacion=campo_19
+            campo_08_tipo_documento_identidad=campo_08,
+            campo_09_numero_documento_identidad=campo_09,
+            campo_10_tipo_comprobante_pago=campo_10,
+            campo_11_serie_comprobante=campo_11,
+            campo_12_numero_comprobante=campo_12,
+            campo_13_fecha_contable=campo_13,
+            campo_14_fecha_vencimiento=campo_14,
+            campo_15_fecha_operacion=campo_15,
+            campo_16_glosa_descripcion=campo_16,
+            campo_17_referencia_operacion=campo_17,
+            campo_18_debe=campo_18,
+            campo_19_haber=campo_19,
+            campo_20_dato_estructurado=campo_20,
+            campo_21_estado_operacion=campo_21
         )
     
     # ================================
@@ -301,36 +321,12 @@ class PLEFormatterSunatV3:
         """Formatear tipo moneda (3 caracteres)"""
         return (tipo_moneda or self.codigo_moneda_default).upper()[:3]
     
-    def _formatear_tipo_documento_sustento(self, tipo: Optional[str]) -> str:
-        """Formatear tipo documento sustento (campo 8)"""
-        if not tipo:
-            return ""
-        return str(tipo).strip()[:2]
-    
-    def _formatear_serie_comprobante(self, serie: Optional[str]) -> str:
-        """Formatear serie comprobante (campo 9)"""
-        if not serie:
-            return ""
-        return str(serie).strip()[:20]
-    
-    def _formatear_numero_comprobante(self, numero: Optional[str]) -> str:
-        """Formatear número comprobante (campo 10)"""
-        if not numero:
-            return ""
-        return str(numero).strip()[:20]
-    
     def _formatear_glosa_descripcion(self, glosa: str) -> str:
-        """Formatear glosa o descripción (campo 14 - máximo 200 caracteres)"""
+        """Formatear glosa o descripción (campo 16 - máximo 200 caracteres)"""
         if not glosa:
             return ""
         return str(glosa).strip()[:self.longitud_maxima_glosa]
-    
-    def _formatear_referencia_operacion(self, referencia: Optional[str]) -> str:
-        """Formatear referencia operación (campo 15 - máximo 200 caracteres)"""
-        if not referencia:
-            return ""
-        return str(referencia).strip()[:self.longitud_maxima_glosa]
-    
+
     def _formatear_monto_debe(self, monto: Optional[float]) -> str:
         """Formatear monto debe (campo 16)"""
         return self._formatear_monto(monto)
@@ -434,18 +430,19 @@ class PLEFormatterSunatV3:
         return self._formatear_monto(monto)
     
     def _formatear_monto(self, monto: Optional[float]) -> str:
-        """Formatear monto con precisión SUNAT (2 decimales)"""
-        if not monto or monto == 0:
-            return ""
-        
+        """
+        Formatear monto con precisión SUNAT (2 decimales).
+
+        Los archivos reales de SUNAT siempre traen "0.00" explícito en el
+        lado sin movimiento (nunca vacío) - ej: "...|13262.27|0.00|...".
+        """
         try:
-            # Usar Decimal para precisión exacta
-            decimal_monto = Decimal(str(monto)).quantize(
+            decimal_monto = Decimal(str(monto or 0)).quantize(
                 Decimal('0.01'), rounding=ROUND_HALF_UP
             )
             return str(decimal_monto)
-        except:
-            return ""
+        except Exception:
+            return "0.00"
     
     def _formatear_dato_estructurado(self, dato: Optional[str]) -> str:
         """Formatear dato estructurado (normalmente vacío)"""
@@ -457,18 +454,38 @@ class PLEFormatterSunatV3:
         """Formatear estado operación (1=Activo, 8=Anulado, 9=Ajuste)"""
         return str(estado or "1").strip()[:1]
 
+    def _formatear_periodo_sunat(self, periodo: Optional[str]) -> str:
+        """
+        Formatear período al formato real de SUNAT: AAAAMM + "00" (8 caracteres).
+
+        Acepta el período en cualquier formato usado internamente en el
+        módulo ("202512", "2025-12", "20251201"...) y siempre devuelve
+        los 8 caracteres que trae el archivo PLE real (ej: "20251200").
+        """
+        if not periodo:
+            return ""
+        solo_digitos = re.sub(r'[^0-9]', '', str(periodo))
+        aaaamm = solo_digitos[:6]
+        if len(aaaamm) < 6:
+            return ""
+        return f"{aaaamm}00"
+
     def formatear_linea_completa(self, datos_asiento: Dict[str, Any]) -> str:
         """
         Formatear línea completa desde diccionario simple
-        
+
         Método de conveniencia para trabajar con datos de asientos
         en formato de diccionario simple (como vienen de base de datos).
-        
+
+        Este es el método que realmente usa la exportación PLE en producción
+        (ver `PLEGenerator.generar_ple_zip_sunat_v3` y el endpoint de preview).
+
         Args:
             datos_asiento: Diccionario con datos del asiento
-            
+
         Returns:
-            Línea PLE formateada con 24 campos
+            Línea PLE formateada con 21 campos (estructura real verificada
+            contra archivos PLE 050100 entregados por SUNAT)
         """
         try:
             # Extraer campos principales
@@ -513,56 +530,126 @@ class PLEFormatterSunatV3:
                 else:
                     fecha_operacion_str = self._formatear_fecha_operacion(str(fecha_operacion))
             
-            # Glosa y montos
+            # Glosa, referencia y montos
             glosa = datos_asiento.get('glosa_descripcion', '')
+            referencia = datos_asiento.get('glosa_referencial', '') or datos_asiento.get('referencia_operacion', '')
             debe = datos_asiento.get('debe', 0.0)
             haber = datos_asiento.get('haber', 0.0)
-            
+
             # Formatear montos
             debe_str = self._formatear_monto(debe)
             haber_str = self._formatear_monto(haber)
-            
+
             # Datos adicionales
             dato_estructurado = datos_asiento.get('dato_estructurado', '')
             estado_operacion = datos_asiento.get('estado_operacion', '1')
-            campo_libre = datos_asiento.get('campo_libre', '')
-            
-            # Generar código único operación (simplificado para testing)
-            codigo_unico = f"{periodo}{numero_correlativo.zfill(6)}"
-            
-            # Ensamblar línea con 24 campos según estructura oficial SUNAT
+
+            # Período SUNAT: 8 caracteres (AAAAMM + "00"), no los 6 de AAAAMM
+            periodo_sunat = self._formatear_periodo_sunat(periodo)
+
+            # Código único de operación (CUO). Si viene precalculado (lo
+            # inyecta `formatear_lote_asientos` al agrupar varias líneas bajo
+            # una misma operación) se respeta; si no, se usa este cálculo de
+            # respaldo por línea (no verificado contra el algoritmo real de
+            # SUNAT, solo mantiene compatibilidad con llamadas sueltas).
+            codigo_unico = datos_asiento.get('codigo_unico_operacion') or f"{periodo}{numero_correlativo.zfill(6)}"
+
+            # Ensamblar línea con los 21 campos reales verificados contra
+            # archivos PLE 050100 entregados por SUNAT (no 24, ni 19)
             campos_linea = [
-                periodo,                          # 1. Período
-                codigo_unico,                     # 2. Código único operación
-                numero_correlativo,               # 3. Número correlativo
-                codigo_cuenta,                    # 4. Código cuenta contable
-                codigo_unidad,                    # 5. Código unidad operación
-                codigo_centro,                    # 6. Código centro costo
-                tipo_moneda,                      # 7. Tipo moneda origen
-                tipo_doc_identidad,               # 8. Tipo documento identidad
-                numero_doc_identidad,             # 9. Número documento identidad
-                tipo_comprobante,                 # 10. Tipo comprobante pago
-                serie_comprobante,                # 11. Serie comprobante
-                numero_comprobante,               # 12. Número comprobante
-                fecha_contable_str,               # 13. Fecha contable
-                fecha_vencimiento_str,            # 14. Fecha vencimiento
-                fecha_operacion_str,              # 15. Fecha operación
-                glosa,                            # 16. Glosa referencial/principal
-                debe_str,                         # 17. Debe moneda origen
-                haber_str,                        # 18. Haber moneda origen
-                debe_str,                         # 19. Debe moneda nacional (=origen en PEN)
-                haber_str,                        # 20. Haber moneda nacional (=origen en PEN)
-                "1.000",                          # 21. Tipo cambio (fijo para PEN)
-                dato_estructurado,                # 22. Dato estructurado
-                estado_operacion,                 # 23. Estado operación
-                campo_libre                       # 24. Campo libre
+                periodo_sunat,                     # 1. Período (AAAAMM00)
+                codigo_unico,                      # 2. Código único operación
+                numero_correlativo,                # 3. Número correlativo
+                codigo_cuenta,                     # 4. Código cuenta contable
+                codigo_unidad,                     # 5. Código unidad operación
+                codigo_centro,                     # 6. Código centro costo
+                tipo_moneda,                       # 7. Tipo moneda origen
+                tipo_doc_identidad,                # 8. Tipo documento identidad
+                numero_doc_identidad,              # 9. Número documento identidad
+                tipo_comprobante,                  # 10. Tipo comprobante de pago
+                serie_comprobante,                 # 11. Serie comprobante
+                numero_comprobante,                # 12. Número comprobante
+                fecha_contable_str,                # 13. Fecha contable
+                fecha_vencimiento_str,             # 14. Fecha vencimiento
+                fecha_operacion_str,               # 15. Fecha operación
+                glosa,                             # 16. Glosa o descripción
+                referencia,                        # 17. Referencia de la operación
+                debe_str,                          # 18. Debe
+                haber_str,                         # 19. Haber
+                dato_estructurado,                 # 20. Dato estructurado
+                estado_operacion                   # 21. Estado de la operación
             ]
-            
-            # Unir con separador oficial SUNAT
-            linea_ple = "|".join(campos_linea)
-            
+
+            # Unir con separador oficial SUNAT (con pipe final, tal como
+            # entregan los archivos reales de SUNAT)
+            linea_ple = "|".join(campos_linea) + "|"
+
             return linea_ple
-            
+
         except Exception as e:
             self.logger.error(f"Error formateando línea desde diccionario: {str(e)}")
             raise ValueError(f"Error formateando línea PLE: {str(e)}")
+
+    def formatear_lote_asientos(self, datos_asientos: List[Dict[str, Any]]) -> List[str]:
+        """
+        Formatea un lote completo de líneas de asiento replicando el
+        agrupamiento real observado en archivos PLE 050100 de SUNAT: varias
+        líneas de una misma operación contable comparten un CUO, y cada línea
+        recibe un correlativo con prefijo de tipo de asiento (A/M/J/C/D/T)
+        que reinicia en 1 dentro de cada grupo (ej. CUO "01-120001" con
+        correlativos M0001..M0009).
+
+        La agrupación usa el campo `numero_asiento` (id de la operación
+        padre - ver `AsientoContableBase.numeroAsiento`), con `numero_documento`
+        como respaldo para datos antiguos que no tengan aún ese campo.
+
+        NOTA: el algoritmo exacto que usa SUNAT para generar el valor del CUO
+        no está 100% verificado (solo se contó con 2 archivos de ejemplo);
+        aquí se aplica un esquema de agrupación consistente con el mismo
+        formato observado (2 dígitos + guion + 6 dígitos), pero el valor
+        exacto podría no coincidir byte a byte con el que asignaría SUNAT.
+
+        Args:
+            datos_asientos: Lista de líneas de asiento, con las mismas claves
+                que espera `formatear_linea_completa`, más opcionalmente
+                `numero_asiento` (clave de agrupación) y `tipo_asiento`
+                (letra A/M/J/C/D/T; por defecto 'M').
+
+        Returns:
+            List[str]: una línea PLE de 21 campos por cada entrada de entrada,
+            en el mismo orden relativo dentro de cada grupo.
+        """
+        grupos: "OrderedDict[str, List[Dict[str, Any]]]" = OrderedDict()
+
+        for indice_original, dato in enumerate(datos_asientos):
+            clave_grupo = (
+                dato.get('numero_asiento')
+                or dato.get('numero_documento')
+                or f"__sin_grupo_{indice_original}"
+            )
+            grupos.setdefault(str(clave_grupo), []).append(dato)
+
+        lineas: List[str] = []
+        for indice_grupo, items in enumerate(grupos.values(), start=1):
+            codigo_unico_grupo = self._generar_codigo_unico_operacion_grupo(indice_grupo)
+
+            for indice_linea, dato in enumerate(items, start=1):
+                tipo_asiento = str(dato.get('tipo_asiento') or 'M').upper()[:1]
+                dato_con_correlativo = {
+                    **dato,
+                    'numero_correlativo': f"{tipo_asiento}{indice_linea:04d}",
+                    'codigo_unico_operacion': codigo_unico_grupo,
+                }
+                lineas.append(self.formatear_linea_completa(dato_con_correlativo))
+
+        return lineas
+
+    def _generar_codigo_unico_operacion_grupo(self, indice_grupo: int) -> str:
+        """
+        Genera un CUO por grupo de operación con el mismo formato observado
+        en archivos reales de SUNAT (2 dígitos + guion + 6 dígitos, ej.
+        "01-120001"). El algoritmo interno exacto de SUNAT para estos dos
+        bloques no está verificado con la documentación oficial; esto solo
+        garantiza CUOs únicos y con el formato correcto por grupo.
+        """
+        return f"00-{indice_grupo:06d}"

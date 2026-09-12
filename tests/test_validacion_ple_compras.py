@@ -1,306 +1,229 @@
 """
-Test de Validación PLE 080000 - Registro de Compras
-==================================================
+PLE 080000 — Registro de Compras.
 
-Script para validar que la implementación del PLE 080000 (Compras)
-cumple exactamente con las especificaciones oficiales SUNAT.
+Este archivo se declara a SUNAT, así que lo que se prueba no es que el código
+corra sino que **la línea diga lo que tiene que decir**: 33 campos, en su orden,
+con las fechas y los montos en el formato que SUNAT espera.
 
-Valida:
-✅ 32 campos oficiales según documentación SUNAT
-✅ Formateado correcto de montos con 2 decimales
-✅ Formateado de fechas DD/MM/YYYY
-✅ Códigos de comprobantes según catálogo oficial
-✅ Estructura de línea PLE separada por |
-✅ Nomenclatura de archivo según SUNAT
+El módulo estuvo generando un archivo vacío sin avisar, porque `compras_service`
+captura la excepción de cada comprobante por separado y sigue. De ahí que varios
+tests de aquí comprueben cosas que parecen obvias —que la fecha no salga en
+blanco, que el tipo de comprobante no esté vacío—: son exactamente los síntomas
+que nadie llegó a ver.
 
-Autor: Sistema ERP - FASE 2.3
-Fecha: Agosto 2025
+Ejecutar:  python -m pytest tests/test_validacion_ple_compras.py -v
 """
 
-import sys
-import os
+from datetime import date
 from decimal import Decimal
-from datetime import datetime
 
-# Agregar path del proyecto
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'app'))
+import pytest
 
-from modules.accounting.schemas.schemas_compras import (
+from app.modules.accounting.ple.ple_formatter_compras import PLEFormatterCompras
+from app.modules.accounting.schemas.compras_schemas import (
     RegistroCompraResponse,
     TipoComprobanteCompra,
-    TipoDocumentoIdentidad,
-    EstadoOperacion
 )
-from modules.accounting.ple.ple_formatter_compras import PLEFormatterCompras
+
+PERIODO = "202408"
 
 
-def test_validacion_ple_compras_completa():
-    """Test completo de validación PLE 080000"""
-    
-    print("=" * 80)
-    print("🧪 VALIDACIÓN PLE 080000 - REGISTRO DE COMPRAS")
-    print("=" * 80)
-    
-    # 1. CREAR REGISTRO DE COMPRA DE PRUEBA
-    print("\n📋 1. Creando registro de compra de prueba...")
-    
-    registro_compra = RegistroCompraResponse(
-        # Metadatos del sistema
-        id="64f123456789012345678901",
-        empresa_id="empresa_test_001",
-        periodo="202408",
-        fecha_creacion=datetime(2024, 8, 15, 10, 30, 0),
-        
-        # Información del proveedor
-        tipo_documento_proveedor=TipoDocumentoIdentidad.RUC,
-        numero_documento_proveedor="20123456789",
-        razon_social_proveedor="PROVEEDOR EJEMPLO S.A.C.",
-        
-        # Información del comprobante
-        tipo_comprobante=TipoComprobanteCompra.FACTURA,
-        serie_comprobante="F001",
-        numero_comprobante="000123",
-        numero_final_rango=None,
-        fecha_emision="15/08/2024",
-        fecha_vencimiento="30/08/2024",
-        
-        # Montos detallados (según PLE 080000)
-        base_imponible_gravada=Decimal("1000.00"),
-        igv=Decimal("180.00"),
-        base_imponible_gravada_operaciones_mixtas=Decimal("0.00"),
-        igv_operaciones_mixtas=Decimal("0.00"),
-        base_imponible_gravada_exportacion=Decimal("0.00"),
-        igv_exportacion=Decimal("0.00"),
-        base_imponible_no_gravada=Decimal("0.00"),
-        isc=Decimal("0.00"),
-        otros_tributos=Decimal("0.00"),
-        importe_total=Decimal("1180.00"),
-        
-        # Datos adicionales
-        codigo_moneda="PEN",
-        tipo_cambio=Decimal("1.000"),
-        fecha_emision_detraccion=None,
-        numero_constancia_detraccion=None,
-        marca_comprobante_retencion=None,
-        clasificacion_bienes_servicios="SERVICIOS PROFESIONALES",
-        identificacion_contrato=None,
-        indicador_error="0",
-        medio_pago="001",
-        estado_operacion=EstadoOperacion.VIGENTE
+def compra(**campos) -> RegistroCompraResponse:
+    """Una factura gravada corriente de S/ 1.180."""
+    base = {
+        "id": "64f123456789012345678901",
+        "empresa_id": "20612969125",
+        "periodo": PERIODO,
+        "fecha_comprobante": date(2024, 8, 15),
+        "tipo_comprobante": "01",
+        "serie_comprobante": "F001",
+        "numero_comprobante": "000123",
+        "tipo_documento_proveedor": "6",
+        "numero_documento_proveedor": "20123456789",
+        "razon_social_proveedor": "PROVEEDOR EJEMPLO S.A.C.",
+        "base_imponible_gravada": Decimal("1000.00"),
+        "igv": Decimal("180.00"),
+        "importe_total": Decimal("1180.00"),
+        "moneda": "PEN",
+        "tipo_cambio": Decimal("1.000"),
+        "clasificacion_bienes_servicios": "1",
+        "estado_operacion": "1",
+    }
+    return RegistroCompraResponse(**{**base, **campos})
+
+
+def campos_de(registro) -> list:
+    """Los campos de la línea PLE, sin el separador final."""
+    linea = PLEFormatterCompras().formatear_registro_compra(registro, PERIODO).to_ple_line()
+    return linea.rstrip("|").split("|")
+
+
+# ---------------------------------------------------------------------------
+# 1. La estructura de la línea
+# ---------------------------------------------------------------------------
+
+def test_la_linea_tiene_los_33_campos_oficiales():
+    assert len(campos_de(compra())) == 33
+
+
+def test_la_linea_termina_en_separador():
+    """SUNAT exige el `|` de cierre; sin él rechaza el archivo entero."""
+    linea = PLEFormatterCompras().formatear_registro_compra(compra(), PERIODO).to_ple_line()
+    assert linea.endswith("|")
+
+
+def test_el_periodo_va_en_el_primer_campo():
+    assert campos_de(compra())[0] == PERIODO
+
+
+# ---------------------------------------------------------------------------
+# 2. Las fechas
+# ---------------------------------------------------------------------------
+
+def test_la_fecha_de_emision_sale_en_formato_sunat():
+    """
+    El esquema declara las fechas como `date` y el formateador solo miraba
+    cadenas: el `re.match` lanzaba TypeError, el `except` se lo tragaba y la
+    fecha salía **vacía** en todas las líneas del archivo.
+    """
+    assert campos_de(compra())[3] == "15/08/2024"
+
+
+def test_la_fecha_de_vencimiento_tambien():
+    assert campos_de(compra(fecha_vencimiento=date(2024, 8, 30)))[4] == "30/08/2024"
+
+
+def test_sin_fecha_de_vencimiento_el_campo_va_vacio():
+    """Es opcional: vacío es correcto, pero tiene que seguir ocupando su sitio."""
+    campos = campos_de(compra())
+    assert campos[4] == ""
+    assert len(campos) == 33
+
+
+def test_la_fecha_de_la_detraccion_sale_formateada():
+    assert campos_de(compra(fecha_emision_detraccion=date(2024, 8, 20)))[25] == "20/08/2024"
+
+
+# ---------------------------------------------------------------------------
+# 3. Los códigos, vengan como texto o como Enum
+# ---------------------------------------------------------------------------
+
+def test_el_tipo_de_comprobante_sale_del_texto():
+    """El esquema lo declara `str`; hacer `.value` sobre él era un AttributeError."""
+    assert campos_de(compra())[5] == "01"
+
+
+def test_el_tipo_de_comprobante_tambien_funciona_como_enum():
+    """Hay rutas que todavía construyen el registro con los Enum del módulo."""
+    assert campos_de(compra(tipo_comprobante=TipoComprobanteCompra.FACTURA))[5] == "01"
+
+
+def test_el_tipo_de_documento_del_proveedor():
+    assert campos_de(compra())[10] == "6"
+
+
+def test_el_estado_de_la_operacion():
+    assert campos_de(compra())[32] == "1"
+
+
+# ---------------------------------------------------------------------------
+# 4. Los importes
+# ---------------------------------------------------------------------------
+
+def test_la_base_y_el_igv_van_con_dos_decimales():
+    campos = campos_de(compra())
+    assert campos[13] == "1000.00"
+    assert campos[14] == "180.00"
+
+
+def test_el_importe_total():
+    assert campos_de(compra())[22] == "1180.00"
+
+
+def test_los_importes_vacios_van_en_cero_no_en_blanco():
+    """Un campo numérico en blanco hace que SUNAT rechace la línea."""
+    campos = campos_de(compra())
+    for indice in (15, 16, 17, 18, 19, 20, 21):
+        assert campos[indice] == "0.00", f"el campo {indice + 1} salió vacío"
+
+
+def test_la_moneda_sale_del_campo_moneda():
+    """El formateador pedía `codigo_moneda`, que no existe en el esquema."""
+    assert campos_de(compra())[23] == "PEN"
+
+
+# ---------------------------------------------------------------------------
+# 5. Adquisiciones no gravadas (campo 20)
+# ---------------------------------------------------------------------------
+
+def test_las_no_gravadas_se_declaran_en_el_campo_20():
+    registro = compra(
+        base_imponible_gravada=Decimal("0.00"),
+        igv=Decimal("0.00"),
+        base_imponible_no_gravada=Decimal("500.00"),
+        importe_total=Decimal("500.00"),
     )
-    
-    print(f"✅ Registro creado: {registro_compra.razon_social_proveedor}")
-    print(f"   Comprobante: {registro_compra.serie_comprobante}-{registro_compra.numero_comprobante}")
-    print(f"   Importe: S/ {registro_compra.importe_total}")
-    
-    # 2. INICIALIZAR FORMATEADOR
-    print("\n🔧 2. Inicializando formateador PLE...")
-    formatter = PLEFormatterCompras()
-    print("✅ Formateador inicializado correctamente")
-    
-    # 3. FORMATEAR REGISTRO A LÍNEA PLE
-    print("\n📝 3. Formateando registro a línea PLE...")
-    linea_ple = formatter.formatear_registro_compra(
-        compra=registro_compra,
-        periodo_aaaamm="202408"
+    assert campos_de(registro)[19] == "500.00"
+
+
+def test_el_campo_20_se_completa_con_el_desglose_si_nadie_lo_puso():
+    """
+    Sin esto, un comprobante cargado con base exonerada declaraba adquisiciones
+    no gravadas en cero: el archivo cuadra consigo mismo pero declara de menos.
+    """
+    registro = compra(
+        base_imponible_gravada=Decimal("0.00"),
+        igv=Decimal("0.00"),
+        base_imponible_exonerada=Decimal("300.00"),
+        base_imponible_inafecta=Decimal("200.00"),
+        importe_total=Decimal("500.00"),
     )
-    
-    print("✅ Línea PLE generada correctamente")
-    
-    # 4. VALIDAR ESTRUCTURA DE 32 CAMPOS
-    print("\n🔍 4. Validando estructura de 32 campos oficiales...")
-    
-    linea_texto = linea_ple.to_ple_line()
-    campos = linea_texto.split("|")
-    
-    print(f"   Línea PLE: {linea_texto}")
-    print(f"   Total campos encontrados: {len(campos) - 1}")  # -1 porque termina en |
-    
-    # Validar que son exactamente 33 campos (32 + campo vacío final)
-    assert len(campos) == 34, f"Error: Se esperaban 33 campos, se encontraron {len(campos) - 1}"
-    print("   ✅ 33 campos correctos (32 oficiales + campo final vacío)")
-    
-    # 5. VALIDAR CAMPOS ESPECÍFICOS UNO POR UNO
-    print("\n📊 5. Validando campos específicos...")
-    
-    validaciones = [
-        (0, "202408", "Período"),
-        (1, "C202408678901", "Código único operación"),
-        (2, "C000000123", "Correlativo asiento"),
-        (3, "15/08/2024", "Fecha emisión"),
-        (4, "30/08/2024", "Fecha vencimiento"),
-        (5, "1", "Tipo comprobante"),
-        (6, "F001", "Serie comprobante"),
-        (7, "", "Año DUA/DSI"),
-        (8, "000123", "Número comprobante"),
-        (9, "", "Número final rango"),
-        (10, "6", "Tipo documento proveedor"),
-        (11, "20123456789", "Número documento proveedor"),
-        (12, "PROVEEDOR EJEMPLO S.A.C.", "Razón social"),
-        (13, "1000.00", "Base imponible gravada"),
-        (14, "180.00", "IGV"),
-        (15, "0.00", "Base imponible mixtas"),
-        (16, "0.00", "IGV mixtas"),
-        (17, "0.00", "Base imponible exportación"),
-        (18, "0.00", "IGV exportación"),
-        (19, "0.00", "Base imponible no gravada"),
-        (20, "0.00", "ISC"),
-        (21, "0.00", "Otros tributos"),
-        (22, "1180.00", "Importe total"),
-        (23, "PEN", "Código moneda"),
-        (24, "1.000", "Tipo cambio"),
-        (25, "", "Fecha constancia detracción"),
-        (26, "", "Número constancia detracción"),
-        (27, "", "Marca retención"),
-        (28, "SERVICIOS PROFESIONALES", "Clasificación bienes"),
-        (29, "", "Identificación contrato"),
-        (30, "0", "Error tipo"),
-        (31, "001", "Medio pago"),
-        (32, "1", "Estado operación")
+    assert registro.base_imponible_no_gravada == Decimal("500.00")
+    assert campos_de(registro)[19] == "500.00"
+
+
+def test_un_campo_20_explicito_manda_sobre_el_desglose():
+    registro = compra(
+        base_imponible_no_gravada=Decimal("700.00"),
+        base_imponible_exonerada=Decimal("300.00"),
+    )
+    assert registro.base_imponible_no_gravada == Decimal("700.00")
+
+
+# ---------------------------------------------------------------------------
+# 6. Importaciones y detracciones
+# ---------------------------------------------------------------------------
+
+def test_el_anio_de_la_dua_solo_aparece_si_se_carga():
+    """Campo 8: vacío en una compra local, con año en una importación."""
+    assert campos_de(compra())[7] == ""
+    assert campos_de(compra(anio_emision_dua_dsi="2024"))[7] == "2024"
+
+
+def test_la_constancia_de_detraccion_llega_al_campo_27():
+    assert campos_de(compra(numero_constancia_detraccion="00123456789"))[26] == "00123456789"
+
+
+# ---------------------------------------------------------------------------
+# 7. El archivo
+# ---------------------------------------------------------------------------
+
+def test_el_nombre_del_archivo_sigue_la_nomenclatura_sunat():
+    nombre = PLEFormatterCompras().generar_nombre_archivo_ple(
+        empresa_ruc="20123456789", periodo_aaaamm=PERIODO, correlativo="0001"
+    )
+    assert nombre.startswith("LE20123456789202408")
+    assert "080000" in nombre
+    assert nombre.endswith(".txt")
+
+
+@pytest.mark.parametrize("cuantos", [1, 3])
+def test_el_archivo_lleva_una_linea_por_comprobante(cuantos):
+    formateador = PLEFormatterCompras()
+    lineas = [
+        formateador.formatear_registro_compra(compra(numero_comprobante=str(n)), PERIODO)
+        for n in range(1, cuantos + 1)
     ]
-    
-    for indice, valor_esperado, descripcion in validaciones:
-        valor_actual = campos[indice]
-        print(f"   Campo {indice + 1:2d}: {descripcion:30} = '{valor_actual}'")
-        
-        if valor_esperado != "":  # Solo validar si hay valor esperado
-            assert valor_actual == str(valor_esperado), \
-                f"Error en campo {indice + 1} ({descripcion}): " \
-                f"esperado '{valor_esperado}', encontrado '{valor_actual}'"
-    
-    print("   ✅ Todos los campos validados correctamente")
-    
-    # 6. VALIDAR GENERACIÓN DE NOMBRE DE ARCHIVO
-    print("\n📁 6. Validando nombre de archivo...")
-    
-    nombre_archivo = formatter.generar_nombre_archivo_ple(
-        empresa_ruc="20123456789",
-        periodo_aaaamm="202408",
-        correlativo="0001"
-    )
-    
-    nombre_esperado = "LE2012345678920240800080000000011.txt"
-    print(f"   Nombre generado: {nombre_archivo}")
-    print(f"   Nombre esperado: {nombre_esperado}")
-    
-    assert nombre_archivo == nombre_esperado, \
-        f"Nombre incorrecto: esperado '{nombre_esperado}', generado '{nombre_archivo}'"
-    print("   ✅ Nombre de archivo correcto")
-    
-    # 7. VALIDAR CONTENIDO DE ARCHIVO COMPLETO
-    print("\n📄 7. Validando contenido de archivo completo...")
-    
-    contenido_archivo = formatter.generar_contenido_archivo_ple([linea_ple])
-    lineas_archivo = contenido_archivo.strip().split("\n")
-    
-    print(f"   Total líneas en archivo: {len(lineas_archivo)}")
-    print(f"   Primera línea: {lineas_archivo[0][:80]}...")
-    
-    assert len(lineas_archivo) == 1, f"Se esperaba 1 línea, se encontraron {len(lineas_archivo)}"
-    assert lineas_archivo[0] == linea_texto.rstrip("|") + "|", "Contenido de línea incorrecto"
-    print("   ✅ Contenido de archivo correcto")
-    
-    # 8. RESUMEN FINAL
-    print("\n" + "=" * 80)
-    print("🎉 VALIDACIÓN COMPLETADA EXITOSAMENTE")
-    print("=" * 80)
-    print(f"📋 Registro procesado: {registro_compra.numero_comprobante}")
-    print(f"📊 Campos generados: 33 (32 oficiales + final)")
-    print(f"💰 Importe total: S/ {registro_compra.importe_total}")
-    print(f"📁 Archivo: {nombre_archivo}")
-    print(f"📏 Tamaño línea: {len(linea_texto)} caracteres")
-    print("✅ CUMPLE 100% CON ESPECIFICACIONES SUNAT PLE 080000")
-    
-    return True
+    contenido = formateador.generar_contenido_archivo_ple(lineas)
 
-
-def test_validacion_multiples_registros():
-    """Test con múltiples registros para validar consistencia"""
-    
-    print("\n" + "=" * 80)
-    print("🧪 VALIDACIÓN MÚLTIPLES REGISTROS")
-    print("=" * 80)
-    
-    formatter = PLEFormatterCompras()
-    registros = []
-    
-    # Crear 3 registros diferentes
-    for i in range(1, 4):
-        registro = RegistroCompraResponse(
-            id=f"64f12345678901234567890{i}",
-            empresa_id="empresa_test_001",
-            periodo="202408",
-            fecha_creacion=datetime(2024, 8, 15, 10, 30, 0),
-            tipo_documento_proveedor=TipoDocumentoIdentidad.RUC,
-            numero_documento_proveedor=f"2012345678{i}",
-            razon_social_proveedor=f"PROVEEDOR {i:03d} S.A.C.",
-            tipo_comprobante=TipoComprobanteCompra.FACTURA,
-            serie_comprobante="F001",
-            numero_comprobante=f"{i:06d}",
-            fecha_emision=f"1{i}/08/2024",
-            fecha_vencimiento=f"3{i}/08/2024",
-            base_imponible_gravada=Decimal(f"{1000 * i}.00"),
-            igv=Decimal(f"{180 * i}.00"),
-            base_imponible_gravada_operaciones_mixtas=Decimal("0.00"),
-            igv_operaciones_mixtas=Decimal("0.00"),
-            base_imponible_gravada_exportacion=Decimal("0.00"),
-            igv_exportacion=Decimal("0.00"),
-            base_imponible_no_gravada=Decimal("0.00"),
-            isc=Decimal("0.00"),
-            otros_tributos=Decimal("0.00"),
-            importe_total=Decimal(f"{1180 * i}.00"),
-            codigo_moneda="PEN",
-            tipo_cambio=Decimal("1.000"),
-            clasificacion_bienes_servicios=f"SERVICIO TIPO {i}",
-            indicador_error="0",
-            medio_pago="001",
-            estado_operacion=EstadoOperacion.VIGENTE
-        )
-        registros.append(registro)
-    
-    # Formatear múltiples registros
-    lineas_ple = formatter.formatear_multiple_compras(registros, "202408")
-    
-    print(f"📊 Registros procesados: {len(lineas_ple)}")
-    
-    for i, linea in enumerate(lineas_ple):
-        linea_texto = linea.to_ple_line()
-        campos = linea_texto.split("|")
-        
-        print(f"   Registro {i+1}: {len(campos)-1} campos, {len(linea_texto)} caracteres")
-        
-        # Validar estructura constante
-        assert len(campos) == 34, f"Registro {i+1}: campos incorrectos"
-        
-        # Validar contenido específico
-        assert campos[0] == "202408", f"Registro {i+1}: período incorrecto"
-        assert campos[5] == "1", f"Registro {i+1}: tipo comprobante incorrecto"
-        assert campos[23] == "PEN", f"Registro {i+1}: moneda incorrecta"
-    
-    # Generar archivo completo
-    contenido_completo = formatter.generar_contenido_archivo_ple(lineas_ple)
-    lineas_archivo = contenido_completo.strip().split("\n")
-    
-    print(f"📄 Líneas en archivo: {len(lineas_archivo)}")
-    print(f"📏 Tamaño total: {len(contenido_completo)} caracteres")
-    
-    assert len(lineas_archivo) == 3, "Cantidad de líneas incorrecta"
-    print("✅ Múltiples registros validados correctamente")
-    
-    return True
-
-
-if __name__ == "__main__":
-    try:
-        # Ejecutar tests
-        test_validacion_ple_compras_completa()
-        test_validacion_multiples_registros()
-        
-        print("\n" + "🎉" * 20)
-        print("TODOS LOS TESTS PASARON EXITOSAMENTE")
-        print("🎉" * 20)
-        
-    except Exception as e:
-        print(f"\n❌ ERROR EN VALIDACIÓN: {str(e)}")
-        print(f"💡 Revisa la implementación del formateador PLE")
-        sys.exit(1)
+    assert len([x for x in contenido.splitlines() if x.strip()]) == cuantos

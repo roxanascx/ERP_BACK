@@ -69,3 +69,37 @@ class SireBusinessException(SireException):
     def __init__(self, message: str, business_rule: str, details: Optional[Dict[str, Any]] = None):
         self.business_rule = business_rule
         super().__init__(message, details)
+
+class SunatValidationException(SireApiException):
+    """
+    Error 422 de SUNAT: la petición se entendió pero no pasó las validaciones.
+
+    SUNAT responde con la forma:
+        {"cod": "422", "msg": "...", "errors": [{"cod": "1001", "msg": "..."}]}
+
+    La lista `errors` es la parte útil (1001 RUC no enviado, 1006 periodo mal
+    formado, 1161 codLibro no permitido, y una fila por cada error del archivo
+    en las cargas masivas). Antes se perdía dentro de un str(e); aquí se
+    conserva entera para poder mostrarla al usuario tal cual.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        errors: Optional[list] = None,
+        cod: Optional[str] = None,
+        response_data: Optional[Dict[str, Any]] = None,
+    ):
+        self.errors = errors or []
+        self.cod = cod
+        super().__init__(message, status_code=422, response_data=response_data)
+
+    def __str__(self) -> str:
+        if not self.errors:
+            return self.message
+        detalle = "; ".join(
+            f"{e.get('cod', '?')}: {e.get('msg', '')}" for e in self.errors[:5]
+        )
+        if len(self.errors) > 5:
+            detalle += f" (y {len(self.errors) - 5} más)"
+        return f"{self.message} — {detalle}"

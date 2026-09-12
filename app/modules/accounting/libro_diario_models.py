@@ -33,6 +33,16 @@ class AsientoContableModel:
             ("empresaId", 1),
             ("cuentaContable.codigo", 1)
         ])
+
+        # Índice para agrupar las líneas de una misma operación/asiento padre.
+        # Nombre explícito porque ya existe en la base de datos (creado antes
+        # por scripts/optimizar_indices_libro_mayor.py) con este mismo nombre;
+        # sin el `name=` aquí, pymongo genera un nombre distinto para la misma
+        # combinación de campos y Mongo lo rechaza (IndexOptionsConflict).
+        self.collection.create_index([
+            ("empresaId", 1),
+            ("numeroAsiento", 1)
+        ], name="empresa_numero_asiento_idx")
         
         # Índice de texto para búsquedas en glosa
         self.collection.create_index([

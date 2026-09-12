@@ -362,53 +362,38 @@ class RcePropuestaService:
             
             for periodo in periodos:
                 try:
-                    # Llamar directamente con httpx como en tus scripts funcionales
-                    import httpx
-                    
-                    url = "https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rvierce/gestionprocesosmasivos/web/masivo/consultaestadotickets"
-                    
-                    # Parámetros v27 obligatorios (copiados de tus scripts funcionales)
+                    # 5.31 del manual, a través del cliente único.
                     params = {
                         'perIni': periodo,
                         'perFin': periodo,
                         'page': 1,
                         'perPage': 20,
-                        'codLibro': '080000',      # ← OBLIGATORIO v27
-                        'codOrigenEnvio': '2'      # ← OBLIGATORIO v27
+                        'codLibro': CodLibro.RCE,
+                        'codOrigenEnvio': CodOrigenEnvio.SERVICIO_API,
                     }
+
+                    data = await self.api_client.get_json(
+                        sunat_ep.consultar_estado_tickets(), token, params=params
+                    )
+
+                    registros = data.get('registros', [])
                     
-                    headers = {
-                        'Authorization': f'Bearer {token}',
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json'
-                    }
-                    
-                    # Hacer request directo (como en tus scripts)
-                    async with httpx.AsyncClient(timeout=30) as client:
-                        response = await client.get(url, headers=headers, params=params)
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        registros = data.get('registros', [])
-                        
-                        # Filtrar solo procesos de propuestas RCE
-                        for registro in registros:
-                            if (registro.get('desProceso') == 'Generar archivo exportar propuesta' or
-                                registro.get('codProceso') in ['10', '5']):  # Códigos de propuestas
-                                
-                                propuesta = {
-                                    'ticket': registro.get('numTicket'),
-                                    'periodo': registro.get('perTributario'),
-                                    'estado': self._mapear_estado_sunat(registro.get('desEstadoProceso')),
-                                    'fecha_proceso': registro.get('fecInicioProceso'),
-                                    'archivos': registro.get('archivoReporte', []),
-                                    'detalle': registro.get('detalleTicket', {}),
-                                    'proceso_descripcion': registro.get('desProceso'),
-                                    'registro_completo': registro
-                                }
-                                propuestas_encontradas.append(propuesta)
-                    else:
-                        print(f"⚠️ Error consultando período {periodo}: {response.status_code}")
+                    # Filtrar solo procesos de propuestas RCE
+                    for registro in registros:
+                        if (registro.get('desProceso') == 'Generar archivo exportar propuesta' or
+                            registro.get('codProceso') in ['10', '5']):  # Códigos de propuestas
+                            
+                            propuesta = {
+                                'ticket': registro.get('numTicket'),
+                                'periodo': registro.get('perTributario'),
+                                'estado': self._mapear_estado_sunat(registro.get('desEstadoProceso')),
+                                'fecha_proceso': registro.get('fecInicioProceso'),
+                                'archivos': registro.get('archivoReporte', []),
+                                'detalle': registro.get('detalleTicket', {}),
+                                'proceso_descripcion': registro.get('desProceso'),
+                                'registro_completo': registro
+                            }
+                            propuestas_encontradas.append(propuesta)
                         
                 except Exception as e:
                     print(f"⚠️ Error consultando período {periodo}: {e}")

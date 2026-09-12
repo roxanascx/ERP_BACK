@@ -76,8 +76,7 @@ async def obtener_resumen_libro_diario(
 @router.get("/empresa/{empresa_id}", response_model=List[LibroDiarioResponse])
 async def obtener_libros_diario_empresa(
     empresa_id: str,
-    periodo_desde: Optional[str] = Query(None, description="Período desde (AAAAMM)"),
-    periodo_hasta: Optional[str] = Query(None, description="Período hasta (AAAAMM)"),
+    periodo: Optional[str] = Query(None, description="Período del libro (coincidencia exacta, ej: 2025-08)"),
     estado: Optional[str] = Query(None, description="Estado del libro"),
     limit: int = Query(50, ge=1, le=1000, description="Límite de resultados"),
     offset: int = Query(0, ge=0, description="Offset para paginación")
@@ -85,13 +84,15 @@ async def obtener_libros_diario_empresa(
     """Obtener todos los libros diario de una empresa"""
     try:
         service = LibroDiarioService()
-        
+
+        # OJO: FiltrosLibroDiario solo declara `periodo` (coincidencia exacta),
+        # no `periodo_desde`/`periodo_hasta` - pasar esos kwargs aquí los
+        # descartaba en silencio y el filtro de período nunca se aplicaba.
         filtros = FiltrosLibroDiario(
-            periodo_desde=periodo_desde,
-            periodo_hasta=periodo_hasta,
+            periodo=periodo,
             estado=estado
         )
-        
+
         return await service.obtener_libros_diario_empresa(
             empresa_id=empresa_id,
             filtros=filtros,
@@ -226,13 +227,28 @@ async def eliminar_libro_diario(
 @router.post("/{libro_id}/asientos", response_model=AsientoContableResponse)
 async def crear_asiento_contable(
     libro_id: str,
-    asiento_data: AsientoContableCreateV2,
+    asiento_data: AsientoContableCreate,
     usuario_id: Optional[str] = Query(None, description="ID del usuario")
 ):
-    """Crear un nuevo asiento contable en el libro diario"""
+    """
+    Crear una línea de asiento contable en el libro diario.
+
+    El modelo de almacenamiento es "plano": cada línea (cuenta + debe/haber)
+    es un documento independiente. El frontend arma un asiento con varias
+    líneas y hace una llamada por línea, compartiendo `numeroAsiento` para
+    poder agruparlas después (ver AsientosManager / libroDiarioApi.ts).
+
+    Antes este endpoint declaraba `AsientoContableCreateV2` (schema agrupado
+    con `detalles: []`) y llamaba a `crear_asiento_contable_v2`, que intentaba
+    reconstruir un `AsientoContableCreate` a partir de campos que no existen
+    en el schema V2 (`numeroCorrelativo`, `glosa`, `cuentaContable`...) y
+    fallaba siempre. El frontend, en cambio, siempre mandó el shape plano
+    correcto - por eso este endpoint nunca funcionó en ninguno de los dos
+    lados hasta ahora.
+    """
     try:
         service = LibroDiarioService()
-        return await service.crear_asiento_contable_v2(
+        return await service.agregar_asiento(
             libro_id=libro_id,
             asiento_data=asiento_data,
             usuario_id=usuario_id

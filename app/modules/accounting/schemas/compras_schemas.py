@@ -1,11 +1,17 @@
 """
-Esquemas Pydantic para el Registro de Compras (PLE 080000) - FIXED.
+Esquemas Pydantic para el Registro de Compras (PLE 080000).
+
+El PLE 080000 pide 33 campos por comprobante. Los que describen el
+comprobante y sus importes principales viven en cada clase; los otros trece
+—detracción, retención, destinos mixtos, medio de pago…— están en
+`CamposPLECompras`, que todas heredan, para no repetirlos cinco veces y que
+no se vuelvan a desincronizar.
 """
 
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 from enum import Enum
 
 
@@ -37,7 +43,97 @@ class EstadoOperacion(str, Enum):
     MODIFICADO = "9"
 
 
-class RegistroCompra(BaseModel):
+class CamposPLECompras(BaseModel):
+    """
+    Los campos del PLE 080000 que no son el comprobante ni sus importes base.
+
+    Todos tienen valor por defecto porque en una compra corriente van vacíos o
+    en cero; solo se llenan en los casos que los piden (una importación, una
+    detracción, una compra destinada a operaciones mixtas).
+    """
+
+    # Campo 8. Solo en importaciones: el año de la DUA/DSI.
+    anio_emision_dua_dsi: Optional[str] = Field(
+        None, max_length=4, description="Año de emisión de la DUA o DSI"
+    )
+    # Campo 10. Para comprobantes emitidos por rango.
+    numero_final_rango: Optional[str] = Field(None, max_length=20)
+
+    # Campos 16-19. Adquisiciones gravadas según a qué operación se destinan.
+    # No son un desglose del campo 14: son columnas distintas del PLE, y por
+    # eso no se suman ni se derivan de la base gravada.
+    base_imponible_gravada_operaciones_mixtas: Decimal = Field(
+        default=Decimal("0.00"), ge=0,
+        description="Base gravada destinada a operaciones gravadas y no gravadas",
+    )
+    igv_operaciones_mixtas: Decimal = Field(default=Decimal("0.00"), ge=0)
+    base_imponible_gravada_exportacion: Decimal = Field(
+        default=Decimal("0.00"), ge=0,
+        description="Base gravada destinada a operaciones de exportación",
+    )
+    igv_exportacion: Decimal = Field(default=Decimal("0.00"), ge=0)
+
+    # Campo 20. SUNAT lo pide como **un solo número**, y así lo entrega el
+    # RCE. Las bases exonerada e inafecta son el desglose interno; si este
+    # campo no viene, se calcula sumándolas para que el PLE nunca declare
+    # cero teniendo importes cargados.
+    base_imponible_no_gravada: Decimal = Field(
+        default=Decimal("0.00"), ge=0,
+        description="Valor de las adquisiciones no gravadas (campo 20 del PLE)",
+    )
+
+    # Campos 26-28. Detracción y retención.
+    fecha_emision_detraccion: Optional[date] = None
+    numero_constancia_detraccion: Optional[str] = Field(None, max_length=23)
+    marca_comprobante_retencion: Optional[str] = Field(None, max_length=1)
+
+    # Campos 30-32.
+    identificacion_contrato: Optional[str] = Field(None, max_length=25)
+    indicador_error: str = Field(default="0", max_length=1)
+    medio_pago: Optional[str] = Field(None, max_length=3)
+
+    @model_validator(mode="after")
+    def completar_no_gravada(self) -> "CamposPLECompras":
+        """
+        Si nadie puso el campo 20, sumarlo del desglose.
+
+        Sin esto, un comprobante cargado con base exonerada saldría en el PLE
+        con adquisiciones no gravadas en cero: el archivo cuadra consigo mismo
+        pero declara de menos.
+        """
+        if not self.base_imponible_no_gravada:
+            exonerada = getattr(self, "base_imponible_exonerada", None) or Decimal("0.00")
+            inafecta = getattr(self, "base_imponible_inafecta", None) or Decimal("0.00")
+            suma = Decimal(exonerada) + Decimal(inafecta)
+            if suma:
+                self.base_imponible_no_gravada = suma
+        return self
+
+
+class CamposPLEComprasOpcionales(BaseModel):
+    """
+    Lo mismo para las actualizaciones parciales.
+
+    Aquí todo es `None` por defecto y no hay validador: en un PATCH, un campo
+    ausente significa «no lo toques», no «ponlo en cero».
+    """
+
+    anio_emision_dua_dsi: Optional[str] = None
+    numero_final_rango: Optional[str] = None
+    base_imponible_gravada_operaciones_mixtas: Optional[Decimal] = None
+    igv_operaciones_mixtas: Optional[Decimal] = None
+    base_imponible_gravada_exportacion: Optional[Decimal] = None
+    igv_exportacion: Optional[Decimal] = None
+    base_imponible_no_gravada: Optional[Decimal] = None
+    fecha_emision_detraccion: Optional[date] = None
+    numero_constancia_detraccion: Optional[str] = None
+    marca_comprobante_retencion: Optional[str] = None
+    identificacion_contrato: Optional[str] = None
+    indicador_error: Optional[str] = None
+    medio_pago: Optional[str] = None
+
+
+class RegistroCompra(CamposPLECompras):
     """Schema base para registro de compras."""
     model_config = ConfigDict(from_attributes=True)
     
@@ -71,7 +167,7 @@ class RegistroCompra(BaseModel):
     updated_at: Optional[datetime] = Field(None, description="Fecha de actualización")
 
 
-class RegistroCompraRequest(BaseModel):
+class RegistroCompraRequest(CamposPLECompras):
     """Schema para request de registro de compras."""
     model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True)
     
@@ -98,7 +194,7 @@ class RegistroCompraRequest(BaseModel):
     estado_operacion: str = Field(default="1", description="Estado de la operación")
 
 
-class RegistroCompraCreate(BaseModel):
+class RegistroCompraCreate(CamposPLECompras):
     """Schema para crear un nuevo registro de compras."""
     model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True)
     
@@ -125,7 +221,7 @@ class RegistroCompraCreate(BaseModel):
     estado_operacion: str = Field(default="1", description="Estado de la operación")
 
 
-class RegistroCompraUpdate(BaseModel):
+class RegistroCompraUpdate(CamposPLEComprasOpcionales):
     """Schema para actualizar un registro de compras."""
     model_config = ConfigDict(str_strip_whitespace=True)
     
@@ -150,7 +246,7 @@ class RegistroCompraUpdate(BaseModel):
     estado_operacion: Optional[str] = None
 
 
-class RegistroCompraResponse(BaseModel):
+class RegistroCompraResponse(CamposPLECompras):
     """Schema para respuesta de registro de compras."""
     model_config = ConfigDict(from_attributes=True)
     
@@ -206,13 +302,20 @@ class PLEComprasMetadata(BaseModel):
 
 
 class RegistroCompraResumen(BaseModel):
-    """Schema para resumen de registros."""
+    """
+    Totales de un periodo, para las tarjetas de la pantalla.
+
+    Los importes van como `float` y no como `Decimal` porque FastAPI
+    serializa los Decimal **como texto**: el front recibia "10.81" en vez de
+    10.81 y las sumas del navegador daban cualquier cosa. Aqui no hace falta
+    la precision del Decimal, son cifras para mirar.
+    """
     model_config = ConfigDict()
-    
+
     total_registros: int
-    total_base_imponible: Decimal
-    total_igv: Decimal
-    total_importe: Decimal
+    total_base_imponible: float
+    total_igv: float
+    total_importe: float
 
 
 class ValidationResult(BaseModel):
@@ -236,9 +339,28 @@ class PLEFileInfo(BaseModel):
 
 
 class PLEComprasExportOptions(BaseModel):
-    """Schema para opciones de exportación PLE."""
+    """
+    Qué exportar al PLE 080000.
+
+    Le faltaban `empresa_id`, el rango de periodos y el correlativo, que son
+    justo los que `generar_ple_compras` lee. Sin ellos el servicio reventaba
+    con AttributeError antes de mirar un solo comprobante.
+    """
     model_config = ConfigDict()
-    
+
+    empresa_id: str = Field(..., description="RUC o identificador de la empresa")
+    periodo_inicio: str = Field(..., min_length=6, max_length=6, description="AAAAMM")
+    periodo_fin: str = Field(..., min_length=6, max_length=6, description="AAAAMM")
+    #: Va en el nombre del archivo. SUNAT lo usa para distinguir reenvíos.
+    correlativo_archivo: str = Field(default="0001", max_length=4)
+
+    # --- Filtros opcionales ---
+    tipo_comprobante: Optional[TipoComprobanteCompra] = None
+    tipo_documento_proveedor: Optional[TipoDocumentoIdentidad] = None
+    estado_operacion: Optional[EstadoOperacion] = None
+    incluir_anulados: bool = False
+    solo_errores: bool = False
+
     formato: str = "txt"
     incluir_cabecera: bool = True
     separador: str = "|"
@@ -246,11 +368,26 @@ class PLEComprasExportOptions(BaseModel):
 
 
 class PLEComprasExportResult(BaseModel):
-    """Schema para resultado de exportación PLE."""
+    """
+    Resultado de generar el PLE 080000.
+
+    Lleva el contenido del archivo y, sobre todo, **cuántos comprobantes se
+    quedaron fuera y por qué**: el servicio formatea uno a uno y captura el
+    error de cada uno, así que sin estos contadores un archivo vacío parece
+    una exportación correcta.
+    """
     model_config = ConfigDict()
-    
-    archivo_generado: str
-    total_registros: int
+
+    nombre_archivo: str
+    contenido_archivo: str
     tamaño_archivo: int
+    total_registros: int
+    registros_exportados: int
+    registros_excluidos: int
+    registros_con_errores: int
     fecha_generacion: datetime
-    hash_md5: str
+    periodo_procesado: str
+    empresa_id: str
+    resumen_montos: Dict[str, Any] = {}
+    errores_encontrados: List[str] = []
+    warnings: List[str] = []

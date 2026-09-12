@@ -25,8 +25,13 @@ class TestCompatibilidadDatos:
     @classmethod
     def setup_class(cls):
         """Configuración inicial del test"""
-        cls.client = MongoClient('mongodb://localhost:27017/')
-        cls.db = cls.client['erp_db']
+        # El nombre de la base sale de la configuracion, no cableado: estaba
+        # puesto a mano como "erp_db" mientras la real se llama "web-erp", asi
+        # que estos tests leian una base vacia y fallaban con "no hay asientos".
+        from app.config import settings
+
+        cls.client = MongoClient(settings.MONGODB_URL)
+        cls.db = cls.client[settings.DATABASE_NAME]
         cls.adapter = DataAdapterMayor()
         
         # Obtener datos reales

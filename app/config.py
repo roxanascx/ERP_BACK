@@ -26,6 +26,11 @@ class Settings:
     SECRET_KEY: str = os.getenv("SECRET_KEY", "tu-clave-secreta-muy-segura")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+
+    # Clave Fernet con la que se cifran las claves SOL y los client_secret de
+    # SIRE en la colección `companies`. Sin ella no se pueden guardar
+    # credenciales nuevas. Ver app/core/crypto.py.
+    SIRE_ENCRYPTION_KEY: str = os.getenv("SIRE_ENCRYPTION_KEY", "")
     
     # CORS
     CORS_ORIGINS: list = [

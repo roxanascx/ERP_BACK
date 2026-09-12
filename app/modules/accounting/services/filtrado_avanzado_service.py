@@ -51,6 +51,13 @@ class CampoOrdenamiento(str, Enum):
     MOVIMIENTO_HABER = "movimiento_haber"
 
 
+def _fecha_iso(valor) -> str:
+    """La fecha como la guardan los asientos: texto YYYY-MM-DD."""
+    if isinstance(valor, (datetime, date)):
+        return valor.strftime("%Y-%m-%d")
+    return str(valor or "")[:10]
+
+
 class TipoAgrupacion(str, Enum):
     """Tipos de agrupación disponibles"""
     POR_CUENTA = "cuenta"
@@ -199,12 +206,17 @@ class ServiceFiltradoAvanzadoMayor:
         if filtro.empresa_id:
             query["empresaId"] = filtro.empresa_id
         
-        # Filtros de fecha
+        # Filtros de fecha.
+        #
+        # Se comparan como texto ISO porque asi es como se guarda `fecha` en los
+        # asientos. Pasar el `date` tal cual fallaba dos veces: Mongo no sabe
+        # codificar `date` —solo `datetime`— y, aunque lo codificara, comparar un
+        # objeto contra un campo de texto no habria casado nunca.
         fecha_query = {}
         if filtro.fecha_desde:
-            fecha_query["$gte"] = filtro.fecha_desde
+            fecha_query["$gte"] = _fecha_iso(filtro.fecha_desde)
         if filtro.fecha_hasta:
-            fecha_query["$lte"] = filtro.fecha_hasta
+            fecha_query["$lte"] = _fecha_iso(filtro.fecha_hasta)
         if fecha_query:
             query["fecha"] = fecha_query
         

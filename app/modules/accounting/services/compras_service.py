@@ -52,6 +52,43 @@ from ....shared.exceptions import (
 logger = logging.getLogger(__name__)
 
 
+def _a_documento(datos: dict) -> dict:
+    """
+    Deja el dict listo para Mongo.
+
+    El driver no sabe codificar Decimal y aborta la escritura entera, asi que
+    los importes se guardan como float. El registro de compras declara 14
+    campos Decimal: crear o editar una compra fallaba siempre con "cannot
+    encode object: Decimal", igual que pasaba en ventas.
+
+    Las fechas `date` tampoco viajan: el driver solo entiende `datetime`.
+    """
+    from datetime import date as _date, datetime as _datetime
+
+    listo = {}
+    for campo, valor in datos.items():
+        if isinstance(valor, Decimal):
+            listo[campo] = float(valor)
+        elif isinstance(valor, _date) and not isinstance(valor, _datetime):
+            listo[campo] = _datetime(valor.year, valor.month, valor.day)
+        else:
+            listo[campo] = valor
+    return listo
+
+
+def _codigo(valor) -> str:
+    """
+    Codigo SUNAT de un campo que puede llegar como texto o como Enum.
+
+    El esquema declara `tipo_comprobante` y compania como `str`, pero el
+    servicio hacia `.value` a secas. Cualquier alta o filtro real moria con
+    "'str' object has no attribute 'value'".
+    """
+    if valor is None:
+        return ""
+    return str(getattr(valor, "value", valor)).strip()
+
+
 class ComprasService:
     """Servicio de negocio para gestión de compras y generación PLE"""
     
@@ -63,7 +100,10 @@ class ComprasService:
             database: Instancia de base de datos MongoDB
         """
         self.db = database
-        self.collection = database.registro_compra  # Corrección: singular, no plural
+        # `registro_compras`, en plural, igual que `registro_ventas`. Convivian
+        # las dos grafias y cada una tenia documentos: lo que escribia una no lo
+        # leia la otra.
+        self.collection = database.registro_compras
         self.ple_formatter = PLEFormatterCompras()
         self.logger = logging.getLogger(__name__)
     
@@ -107,7 +147,7 @@ class ComprasService:
             
             # Preparar documento para MongoDB
             documento = {
-                **compra_data.dict(),
+                **_a_documento(compra_data.dict()),
                 "empresa_id": empresa_id,
                 "periodo": periodo,
                 "fecha_creacion": datetime.utcnow(),
@@ -211,7 +251,7 @@ class ComprasService:
             
             # Actualizar registro
             datos_actualizacion = {
-                **compra_data.dict(),
+                **_a_documento(compra_data.dict()),
                 "fecha_actualizacion": datetime.utcnow()
             }
             
@@ -337,7 +377,7 @@ class ComprasService:
                 filtros["periodo"] = {"$lte": periodo_fin}
             
             if tipo_comprobante:
-                filtros["tipo_comprobante"] = tipo_comprobante.value
+                filtros["tipo_comprobante"] = _codigo(tipo_comprobante)
             
             if numero_documento_proveedor:
                 filtros["numero_documento_proveedor"] = numero_documento_proveedor
@@ -493,7 +533,7 @@ class ComprasService:
         """Validar que el comprobante no esté duplicado"""
         filtros = {
             "empresa_id": empresa_id,
-            "tipo_comprobante": tipo_comprobante.value,
+            "tipo_comprobante": _codigo(tipo_comprobante),
             "numero_comprobante": numero,
             "periodo": periodo,
             "estado_operacion": {"$ne": EstadoOperacion.ANULADO.value}
@@ -577,8 +617,14 @@ class ComprasService:
         return registros
     
     async def _obtener_documento_empresa(self, empresa_id: str) -> Dict[str, Any]:
-        """Obtener documento de empresa desde la base de datos"""
-        empresa = await self.db.empresas.find_one({"_id": ObjectId(empresa_id)})
+        """
+        Documento de la empresa. `empresa_id` es el RUC, igual que en ventas.
+
+        Buscaba en `empresas` por `_id` convertido a ObjectId: ni la coleccion ni
+        la clave eran las correctas, asi que la exportacion moria con
+        "is not a valid ObjectId" justo al ir a componer el nombre del archivo.
+        """
+        empresa = await self.db.companies.find_one({"ruc": empresa_id})
         if not empresa:
             raise NotFoundException(f"Empresa {empresa_id} no encontrada")
         return empresa
@@ -630,14 +676,20 @@ class ComprasService:
                 {
                     "$match": {
                         "empresa_id": empresa_id,
-                        "periodo": periodo_aaaamm
+                        "periodo": periodo_aaaamm,
+                        # Los anulados no cuentan, igual que en el listado. Sin
+                        # esto las tarjetas dirian una cifra y la tabla otra.
+                        "estado_operacion": {"$ne": EstadoOperacion.ANULADO.value},
                     }
                 },
                 {
                     "$group": {
                         "_id": None,
                         "total_registros": {"$sum": 1},
-                        "total_base_imponible": {"$sum": "$base_imponible"},
+                        # El campo se llama `base_imponible_gravada`. Sumando
+                        # `base_imponible`, que no existe, la base salia siempre
+                        # en cero aunque hubiera comprobantes gravados.
+                        "total_base_imponible": {"$sum": "$base_imponible_gravada"},
                         "total_igv": {"$sum": "$igv"},
                         "total_isc": {"$sum": "$isc"},
                         "total_otros_tributos": {"$sum": "$otros_tributos"},

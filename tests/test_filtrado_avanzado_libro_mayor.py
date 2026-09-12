@@ -38,9 +38,13 @@ from app.modules.accounting.services.filtrado_avanzado_service import (
 )
 from app.modules.accounting.schemas.schemas_mayor import TipoCuentaContable
 
+from app.config import settings
+
 # Variables globales para tests
 DB_CLIENT = None
-DB_NAME = "sistema_erp"
+#: Estaba cableado a "sistema_erp", que no existe. Sale de la configuracion
+#: para que el test mire la misma base que la aplicacion.
+DB_NAME = settings.DATABASE_NAME
 EMPRESA_ID_TEST = "60b9b9b9b9b9b9b9b9b9b9b9"  # ID de prueba
 RUC_EMPRESA_TEST = "20123456789"
 
@@ -72,6 +76,31 @@ def teardown_module(module):
     print("="*80)
 
 
+def aplicar(filtro):
+    """
+    Aplicar un filtro esperando de verdad al servicio.
+
+    `aplicar_filtro_avanzado` es `async`, y estos tests son funciones
+    normales: llamarlo sin `await` devolvia una corrutina, y cada aserto
+    moria con "'coroutine' object has no attribute". El modulo estaba bien;
+    el test no lo esperaba.
+
+    El cliente se crea aqui dentro, no en `setup_module`: Motor se ata al
+    primer bucle que ve, y cada `asyncio.run()` abre y cierra el suyo.
+    """
+    async def correr():
+        from motor.motor_asyncio import AsyncIOMotorClient
+
+        cliente = AsyncIOMotorClient(settings.MONGODB_URL)
+        try:
+            servicio = ServiceFiltradoAvanzadoMayor(cliente, DB_NAME)
+            return await servicio.aplicar_filtro_avanzado(filtro)
+        finally:
+            cliente.close()
+
+    return asyncio.run(correr())
+
+
 class TestFiltradoAvanzadoBasico:
     """Tests para filtros básicos del Libro Mayor"""
     
@@ -92,7 +121,7 @@ class TestFiltradoAvanzadoBasico:
             )
             
             # Aplicar filtro
-            resultado = service.aplicar_filtro_avanzado(filtro)
+            resultado = aplicar(filtro)
             
             # Validaciones
             assert resultado is not None, "Resultado no debe ser None"
@@ -139,7 +168,7 @@ class TestFiltradoAvanzadoBasico:
                     incluir_saldos_cero=True
                 )
                 
-                resultado = service.aplicar_filtro_avanzado(filtro)
+                resultado = aplicar(filtro)
                 
                 if resultado.total_registros > 0:
                     print(f"    ✅ Encontrados {resultado.total_registros} registros para {codigo}")
@@ -171,7 +200,7 @@ class TestFiltradoAvanzadoBasico:
                 limite=10
             )
             
-            resultado = service.aplicar_filtro_avanzado(filtro)
+            resultado = aplicar(filtro)
             print(f"  Cuentas con saldo deudor >= 1000: {resultado.total_registros}")
             
             # Validar que cumplan el criterio
@@ -186,7 +215,7 @@ class TestFiltradoAvanzadoBasico:
                 limite=5
             )
             
-            resultado = service.aplicar_filtro_avanzado(filtro)
+            resultado = aplicar(filtro)
             print(f"  Cuentas con movimiento debe >= 500: {resultado.total_registros}")
             
             # Validar que tengan movimientos
@@ -222,7 +251,7 @@ class TestFiltradoAvanzadoTexto:
                     limite=5
                 )
                 
-                resultado = service.aplicar_filtro_avanzado(filtro)
+                resultado = aplicar(filtro)
                 
                 if resultado.total_registros > 0:
                     print(f"    ✅ Encontrados {resultado.total_registros} registros con '{termino}'")
@@ -269,7 +298,7 @@ class TestFiltradoAvanzadoTexto:
                 )
                 
                 try:
-                    resultado = service.aplicar_filtro_avanzado(filtro)
+                    resultado = aplicar(filtro)
                     
                     if resultado.total_registros > 0:
                         print(f"    ✅ Encontrados {resultado.total_registros} registros con patrón '{patron}'")
@@ -309,7 +338,7 @@ class TestFiltradoAvanzadoOrdenamiento:
                 limite=10
             )
             
-            resultado = service.aplicar_filtro_avanzado(filtro)
+            resultado = aplicar(filtro)
             
             if resultado.total_registros > 0:
                 print(f"  Ordenado por código (ASC): {resultado.total_registros} registros")
@@ -324,7 +353,7 @@ class TestFiltradoAvanzadoOrdenamiento:
                 
                 # Test ordenamiento descendente
                 filtro.tipo_orden = TipoOrdenamiento.DESCENDENTE
-                resultado_desc = service.aplicar_filtro_avanzado(filtro)
+                resultado_desc = aplicar(filtro)
                 
                 codigos_desc = [r.codigo_cuenta_contable for r in resultado_desc.registros]
                 print(f"    Códigos (DESC): {', '.join(codigos_desc[:5])}")
@@ -354,7 +383,7 @@ class TestFiltradoAvanzadoOrdenamiento:
                 ordenar_por=CampoOrdenamiento.CODIGO_CUENTA
             )
             
-            primera_pagina = service.aplicar_filtro_avanzado(filtro)
+            primera_pagina = aplicar(filtro)
             
             if primera_pagina.total_registros > 5:
                 print(f"  Primera página: {len(primera_pagina.registros)} registros")
@@ -362,7 +391,7 @@ class TestFiltradoAvanzadoOrdenamiento:
                 
                 # Segunda página
                 filtro.offset = 5
-                segunda_pagina = service.aplicar_filtro_avanzado(filtro)
+                segunda_pagina = aplicar(filtro)
                 
                 print(f"  Segunda página: {len(segunda_pagina.registros)} registros")
                 codigos_pagina2 = [r.codigo_cuenta_contable for r in segunda_pagina.registros]
@@ -404,7 +433,7 @@ class TestFiltradoAvanzadoEstadisticas:
                 incluir_estadisticas=True
             )
             
-            resultado = service.aplicar_filtro_avanzado(filtro)
+            resultado = aplicar(filtro)
             
             print(f"  Total de cuentas: {resultado.total_registros}")
             print(f"  Total saldo deudor: {resultado.total_saldo_deudor}")
@@ -442,12 +471,12 @@ class TestFiltradoAvanzadoEstadisticas:
             # Test agrupación por tipo de cuenta
             filtro = FiltroAvanzado(
                 empresa_id=EMPRESA_ID_TEST,
-                agrupar_por=TipoAgrupacion.TIPO_CUENTA,
+                agrupar_por=TipoAgrupacion.POR_TIPO_CUENTA,
                 incluir_totales=True,
                 limite=50  # Más registros para agrupar
             )
             
-            resultado = service.aplicar_filtro_avanzado(filtro)
+            resultado = aplicar(filtro)
             
             if resultado.agrupaciones:
                 print(f"  Agrupaciones por tipo de cuenta:")
@@ -457,8 +486,8 @@ class TestFiltradoAvanzadoEstadisticas:
                 print("  ℹ️  No se generaron agrupaciones (puede requerir más datos)")
             
             # Test agrupación por nivel
-            filtro.agrupar_por = TipoAgrupacion.NIVEL_CUENTA
-            resultado_nivel = service.aplicar_filtro_avanzado(filtro)
+            filtro.agrupar_por = TipoAgrupacion.POR_NIVEL_CUENTA
+            resultado_nivel = aplicar(filtro)
             
             if resultado_nivel.agrupaciones:
                 print(f"  Agrupaciones por nivel de cuenta:")
@@ -488,13 +517,13 @@ class TestFiltradoAvanzadoComplejos:
                 patron_codigo_cuenta="^[1]",  # Cuentas que empiecen con 1 (activos)
                 movimiento_debe_min=Decimal('100.00'),
                 incluir_saldos_cero=False,
-                ordenar_por=CampoOrdenamiento.SALDO_FINAL_DEUDOR,
+                ordenar_por=CampoOrdenamiento.SALDO_DEUDOR,
                 tipo_orden=TipoOrdenamiento.DESCENDENTE,
                 limite=10,
                 incluir_totales=True
             )
             
-            resultado = service.aplicar_filtro_avanzado(filtro)
+            resultado = aplicar(filtro)
             
             print(f"  Cuentas de activo con movimientos >= 100: {resultado.total_registros}")
             
@@ -533,7 +562,7 @@ class TestFiltradoAvanzadoComplejos:
                 limite=5
             )
             
-            resultado = service.aplicar_filtro_avanzado(filtro_empresa_inexistente)
+            resultado = aplicar(filtro_empresa_inexistente)
             assert resultado.total_registros == 0, "No debe encontrar registros para empresa inexistente"
             print("  ✅ Empresa inexistente: 0 registros")
             
@@ -546,7 +575,7 @@ class TestFiltradoAvanzadoComplejos:
             )
             
             # Esto debería devolver 0 registros o manejar el error
-            resultado = service.aplicar_filtro_avanzado(filtro_fechas_invalidas)
+            resultado = aplicar(filtro_fechas_invalidas)
             print(f"  ✅ Rango fechas inválido: {resultado.total_registros} registros")
             
             # Test con límite muy grande
@@ -555,7 +584,7 @@ class TestFiltradoAvanzadoComplejos:
                 limite=999999  # Límite muy grande
             )
             
-            resultado = service.aplicar_filtro_avanzado(filtro_limite_grande)
+            resultado = aplicar(filtro_limite_grande)
             print(f"  ✅ Límite grande manejado: {resultado.total_registros} registros")
             
             print("✅ Test validación parámetros completado")

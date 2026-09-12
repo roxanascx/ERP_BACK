@@ -27,7 +27,7 @@ async def get_auth_service() -> SireAuthService:
         mongo_collection=database.sire_sessions if database is not None else None
     )
     api_client = SunatApiClient()
-    return SireAuthService(token_manager, api_client)
+    return SireAuthService(api_client, token_manager)
 
 async def get_company_service() -> CompanyService:
     """Obtener instancia del servicio de empresas"""

@@ -12,6 +12,15 @@ pymongo==4.14.0
 dnspython==2.7.0
 certifi==2025.8.3
 
+# Autenticacion SIRE: token_manager.py importa `jose`, y app/core/crypto.py
+# cifra las credenciales SUNAT guardadas en Mongo.
+python-jose[cryptography]==3.5.0
+cryptography==50.0.1
+
+# Dependencias para módulo Socios de Negocio
+pillow==10.1.0
+pytesseract==0.3.10
+
 # --- Clientes HTTP (SUNAT / SIRE / Consultas API) ---
 httpx==0.28.1
 requests==2.32.5

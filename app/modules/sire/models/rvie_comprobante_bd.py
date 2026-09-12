@@ -62,7 +62,7 @@ class RvieComprobanteBD(BaseModel):
     class Config:
         # Configuración para MongoDB
         validate_assignment = True
-        allow_population_by_field_name = True
+        populate_by_name = True
         arbitrary_types_allowed = True
         json_encoders = {
             ObjectId: str,

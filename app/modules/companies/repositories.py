@@ -3,36 +3,50 @@ from motor.motor_asyncio import AsyncIOMotorCollection
 from bson import ObjectId
 from datetime import datetime
 
+from ...core.crypto import decrypt_secret_fields, encrypt_secret_fields
 from ...database import get_database
 from .models import CompanyModel
 
 class CompanyRepository:
     """
     Repository para operaciones de empresas en MongoDB
+
+    Este repositorio es la frontera de cifrado: los secretos (clave SOL,
+    client_secret de SIRE y demás claves de la empresa) se cifran al escribir y
+    se descifran al leer, de modo que el resto de la aplicación sigue trabajando
+    con `CompanyModel` en claro y en MongoDB nunca queda un secreto legible.
     """
-    
+
     def __init__(self):
         self.db = get_database()
         self.collection: AsyncIOMotorCollection = self.db.companies
-    
+
+    @staticmethod
+    def _to_model(company_doc: Dict[str, Any]) -> CompanyModel:
+        """Construye el modelo descifrando los secretos del documento."""
+        return CompanyModel(**decrypt_secret_fields(company_doc))
+
     async def create_company(self, company_data: Dict[str, Any]) -> CompanyModel:
         """Crear una nueva empresa"""
         # Asegurar timestamps
         company_data["fecha_registro"] = datetime.now()
         company_data["fecha_actualizacion"] = datetime.now()
-        
+
+        # Cifrar los secretos antes de que toquen la base
+        company_data = encrypt_secret_fields(company_data)
+
         # Insertar en MongoDB
         result = await self.collection.insert_one(company_data)
         
         # Obtener el documento insertado
         company_doc = await self.collection.find_one({"_id": result.inserted_id})
-        return CompanyModel(**company_doc)
+        return self._to_model(company_doc)
     
     async def get_company_by_ruc(self, ruc: str) -> Optional[CompanyModel]:
         """Obtener empresa por RUC"""
         company_doc = await self.collection.find_one({"ruc": ruc})
         if company_doc:
-            return CompanyModel(**company_doc)
+            return self._to_model(company_doc)
         return None
     
     async def get_company_by_id(self, company_id: str) -> Optional[CompanyModel]:
@@ -40,7 +54,7 @@ class CompanyRepository:
         try:
             company_doc = await self.collection.find_one({"_id": ObjectId(company_id)})
             if company_doc:
-                return CompanyModel(**company_doc)
+                return self._to_model(company_doc)
         except Exception:
             pass
         return None
@@ -49,7 +63,10 @@ class CompanyRepository:
         """Actualizar empresa por RUC"""
         # Agregar timestamp de actualización
         update_data["fecha_actualizacion"] = datetime.now()
-        
+
+        # Cifrar los secretos que vengan en la actualización
+        update_data = encrypt_secret_fields(update_data)
+
         # Actualizar documento
         result = await self.collection.find_one_and_update(
             {"ruc": ruc},
@@ -58,7 +75,7 @@ class CompanyRepository:
         )
         
         if result:
-            return CompanyModel(**result)
+            return self._to_model(result)
         return None
     
     async def delete_company(self, ruc: str) -> bool:
@@ -93,7 +110,7 @@ class CompanyRepository:
         cursor = self.collection.find(filter_query).skip(skip).limit(limit)
         companies_docs = await cursor.to_list(length=limit)
         
-        return [CompanyModel(**doc) for doc in companies_docs]
+        return [self._to_model(doc) for doc in companies_docs]
     
     async def count_companies(self, activas_only: bool = False, con_sire_only: bool = False) -> int:
         """Contar empresas con filtros"""
@@ -119,7 +136,7 @@ class CompanyRepository:
         cursor = self.collection.find(search_filter).limit(limit)
         companies_docs = await cursor.to_list(length=limit)
         
-        return [CompanyModel(**doc) for doc in companies_docs]
+        return [self._to_model(doc) for doc in companies_docs]
     
     async def get_companies_with_sire(self) -> List[CompanyModel]:
         """Obtener solo empresas con SIRE configurado"""
@@ -134,7 +151,7 @@ class CompanyRepository:
         cursor = self.collection.find(filter_query)
         companies_docs = await cursor.to_list(length=None)
         
-        return [CompanyModel(**doc) for doc in companies_docs]
+        return [self._to_model(doc) for doc in companies_docs]
     
     async def exists_company(self, ruc: str) -> bool:
         """Verificar si existe una empresa con el RUC dado"""

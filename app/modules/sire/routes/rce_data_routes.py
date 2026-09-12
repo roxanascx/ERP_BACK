@@ -245,62 +245,14 @@ async def obtener_estadisticas_proveedores(
     Returns:
         Lista de estadísticas por proveedor
     """
-    try:
-        # Obtener resumen que incluya datos de proveedores
-        resumen = await service.obtener_resumen_periodo(ruc, periodo)
-        
-        if not resumen:
-            return {
-                "status": "error",
-                "message": "No se encontraron datos para el período",
-                "ruc": ruc,
-                "periodo": periodo,
-                "total_proveedores": 0,
-                "proveedores": []
-            }
-        
-        # Simular estadísticas por proveedor (se puede implementar lógica real después)
-        proveedores_mock = [
-            {
-                "ruc_proveedor": "20100047218",
-                "razon_social": "TELEFONICA DEL PERU S.A.A.",
-                "total_comprobantes": 15,
-                "total_importe": 2850.50,
-                "total_igv": 513.09,
-                "porcentaje_participacion": 25.5
-            },
-            {
-                "ruc_proveedor": "20131312955", 
-                "razon_social": "ENTEL PERU S.A.",
-                "total_comprobantes": 8,
-                "total_importe": 1200.00,
-                "total_igv": 216.00,
-                "porcentaje_participacion": 15.2
-            },
-            {
-                "ruc_proveedor": "20100130204",
-                "razon_social": "COMPAÑIA DE MINAS BUENAVENTURA S.A.A.",
-                "total_comprobantes": 12,
-                "total_importe": 3500.75,
-                "total_igv": 630.14,
-                "porcentaje_participacion": 35.8
-            }
-        ]
-        
-        return {
-            "status": "success",
-            "ruc": ruc,
-            "periodo": periodo,
-            "total_proveedores": len(proveedores_mock),
-            "proveedores": proveedores_mock[:limit]
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Error al obtener estadísticas de proveedores: {str(e)}",
-            "ruc": ruc,
-            "periodo": periodo,
-            "total_proveedores": 0,
-            "proveedores": []
-        }
+    # Sin implementar. Este endpoint llamaba a un método inexistente
+    # (`RceComprasService.obtener_resumen_periodo`) y, de haber llegado más
+    # allá, devolvía una lista de proveedores inventada como si fuera real.
+    # Implementarlo exige agregar los comprobantes guardados del período.
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Las estadísticas por proveedor aún no están implementadas. "
+            "Usa /sire/rce/consultas/proveedores/ranking mientras tanto."
+        )
+    )

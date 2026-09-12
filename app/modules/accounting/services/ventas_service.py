@@ -102,12 +102,22 @@ class VentasService:
             
             # Preparar documento para MongoDB
             documento = {
-                **venta_data.dict(),
+                **self._a_documento(venta_data.dict()),
                 "empresa_id": empresa_id,
                 "periodo": periodo,
+                # Marca el comprobante como capturado a mano. La importacion
+                # del SIRE respeta todo lo que no sea origen "SIRE", asi que
+                # esto es lo que impide que una reimportacion lo pise.
+                "origen": "MANUAL",
                 "fecha_creacion": datetime.utcnow(),
                 "fecha_actualizacion": None
             }
+
+            # Se clasifica al nacer, con la misma regla que usa la
+            # importacion del SIRE. Sin esto la venta manual no aparece en el
+            # reparto por subdiario y el usuario no ve donde va a ir su
+            # asiento hasta que contabiliza.
+            documento.update(await self._clasificar_subdiario(empresa_id, documento))
             
             # Insertar en MongoDB
             resultado = await self.collection.insert_one(documento)
@@ -127,6 +137,60 @@ class VentasService:
             self.logger.error(f"Error creando registro de venta: {str(e)}")
             raise BusinessLogicException(f"Error interno creando registro: {str(e)}")
     
+    @staticmethod
+    def _a_documento(datos: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Deja el dict listo para Mongo.
+
+        El driver no sabe codificar Decimal y aborta la escritura entera, asi
+        que los importes se guardan como float —que es lo que ya hace el
+        resto del modulo—. Sin esto, crear o editar una venta a mano fallaba
+        siempre con "cannot encode object: Decimal".
+        """
+        return {
+            campo: float(valor) if isinstance(valor, Decimal) else valor
+            for campo, valor in datos.items()
+        }
+
+    async def _clasificar_subdiario(
+        self, empresa_id: str, documento: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Subdiario que le toca al comprobante segun sus importes.
+
+        Es la misma deduccion que aplica la importacion del SIRE, para que una
+        venta manual y una importada con los mismos importes acaben en el
+        mismo subdiario. Si falla, la venta se guarda igual: la
+        contabilizacion la vuelve a clasificar y ahi si avisa de lo que falta.
+        """
+        try:
+            from .subdiario_service import SubdiarioService
+
+            sub = await SubdiarioService(self.db).subdiario_para_venta(
+                empresa_id,
+                {
+                    "exportacion": documento.get("valor_facturado_exportacion"),
+                    "base_gravada": documento.get("base_imponible_gravada"),
+                    "exonerado": documento.get("importe_exonerado"),
+                    "inafecto": documento.get("importe_inafecto"),
+                },
+            )
+        except Exception:
+            self.logger.exception(
+                f"No se pudo clasificar el subdiario de una venta manual de {empresa_id}"
+            )
+            return {}
+
+        if not sub:
+            return {}
+
+        return {
+            "subdiario": sub["codigo"],
+            "subdiario_nombre": sub.get("nombre"),
+            "subdiario_listo": bool(sub.get("listo")),
+            "naturaleza": sub.get("naturaleza"),
+        }
+
     async def obtener_registro_venta(
         self,
         registro_id: str,
@@ -206,7 +270,7 @@ class VentasService:
             
             # Actualizar registro
             datos_actualizacion = {
-                **venta_data.dict(),
+                **self._a_documento(venta_data.dict()),
                 "fecha_actualizacion": datetime.utcnow()
             }
             

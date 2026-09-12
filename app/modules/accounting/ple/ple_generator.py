@@ -673,10 +673,11 @@ class PLEGenerator:
         directorio_salida: Optional[str] = None
     ) -> Tuple[PLEArchivo, PLEZipMetadata]:
         """
-        Generar archivo PLE en formato ZIP usando el formateador SUNAT V3 (24 campos)
-        
-        Este método utiliza el formateador oficial de 24 campos y genera
-        directamente un archivo ZIP conforme a la normativa SUNAT.
+        Generar archivo PLE en formato ZIP usando el formateador SUNAT V3 (21 campos)
+
+        Este método utiliza el formateador de 21 campos (verificado contra
+        archivos PLE reales entregados por SUNAT) y genera directamente un
+        archivo ZIP conforme a la normativa SUNAT.
         
         Args:
             datos_asientos: Lista de asientos contables a procesar
@@ -763,7 +764,7 @@ class PLEGenerator:
                 metadatos={
                     'empresa_ruc': ruc_empresa,
                     'periodo': periodo.strftime('%Y%m'),
-                    'formato': 'SUNAT_V3_24_campos',
+                    'formato': 'SUNAT_V3_21_campos',
                     'compresion': metadata_zip.ratio_compresion
                 },
                 fecha_generacion=metadata_zip.fecha_creacion,
@@ -795,10 +796,10 @@ class PLEGenerator:
             for linea in contenido_txt.strip().split('\n'):
                 if linea.strip():
                     campos = linea.split('|')
-                    if len(campos) >= 24:  # Formato SUNAT V3 tiene 24 campos
-                        # Campos 17 (debe) y 18 (haber) en formato de 24 campos (índices 16 y 17)
-                        debe_str = campos[16] if len(campos) > 16 else "0"
-                        haber_str = campos[17] if len(campos) > 17 else "0"
+                    if len(campos) >= 21:  # Formato PLE real Libro Diario: 21 campos
+                        # Campos 18 (debe) y 19 (haber) en formato de 21 campos (índices 17 y 18)
+                        debe_str = campos[17] if len(campos) > 17 else "0"
+                        haber_str = campos[18] if len(campos) > 18 else "0"
                         
                         debe = float(debe_str) if debe_str else 0.0
                         haber = float(haber_str) if haber_str else 0.0

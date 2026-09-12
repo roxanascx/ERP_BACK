@@ -21,7 +21,11 @@ from ..models.rvie import (
 from ..schemas.rvie_schemas import RvieResumenResponse
 from ..models.responses import SireApiResponse, TicketResponse, FileDownloadResponse
 from ..utils.exceptions import SireException, SireApiException, SireValidationException
+from . import sunat_endpoints as ep
+from . import sunat_endpoints_rvie as ep_rvie
 from .api_client import SunatApiClient
+from .sunat_endpoints import CodLibro
+from .sunat_endpoints_rvie import CodProcesoRvie
 from .token_manager import SireTokenManager
 
 logger = logging.getLogger(__name__)
@@ -54,15 +58,10 @@ class RvieService:
             self.repository = None
         
         # Configuración de endpoints RVIE
-        self.rvie_endpoints = {
-            "propuesta": "/rvie/propuesta",
-            "aceptar": "/rvie/aceptar",
-            "reemplazar": "/rvie/reemplazar", 
-            "preliminar": "/rvie/preliminar",
-            "inconsistencias": "/rvie/inconsistencias",
-            "ticket": "/rvie/ticket",
-            "archivo": "/rvie/archivo"
-        }
+        # Las rutas de este servicio salían de un diccionario inventado
+        # ("/rvie/aceptar", "/rvie/ticket"...) que no aparece en ningún manual:
+        # todas devolvían 404. Ahora se construyen con `sunat_endpoints_rvie`,
+        # verificado contra el manual de Ventas v30.
         
         # Cache de operaciones
         self.operaciones_cache: Dict[str, Dict] = {}
@@ -156,7 +155,7 @@ class RvieService:
             
             # 5. REALIZAR PETICIÓN CON RETRY Y MANEJO DE RESPUESTAS MASIVAS
             # Usar el endpoint correcto del api_client
-            endpoint_url = self.api_client.endpoints["rvie_descargar_propuesta"].format(periodo=periodo)
+            endpoint_url = ep_rvie.descargar_propuesta(periodo)  # 5.18 del manual de Ventas
             
             # LOG: Mostrar URL y parámetros que se van a usar
             logger.info(f"🔗 [RVIE] URL endpoint: {endpoint_url}")
@@ -297,7 +296,7 @@ class RvieService:
             
             # 4. PREPARAR ENDPOINT SEGÚN MANUAL SUNAT v25
             # Según manual: NO requiere parámetros en body ("Parámetros[body]: No aplica")
-            endpoint_url = self.api_client.endpoints["rvie_aceptar_propuesta"].format(periodo=periodo)
+            endpoint_url = ep_rvie.aceptar_propuesta(periodo)  # 5.8 del manual de Ventas
             
             # 5. REALIZAR PETICIÓN A SUNAT PARA ACEPTAR PROPUESTA
             # Manual SUNAT v25: POST sin body, solo período en URL
@@ -440,11 +439,20 @@ class RvieService:
             }
             
             # Hacer request a SUNAT
-            response_data = await self.api_client.post_with_auth(
-                self.rvie_endpoints["reemplazar"],
+            # 5.3 del manual de Ventas: es una carga por tus.io, no un POST con
+            # el contenido del txt metido en un JSON, que es lo que se hacía
+            # antes contra una URL inexistente. codProceso 3 (en Compras es 61).
+            carga = await self.api_client.subir_archivo(
                 token,
-                data
+                ep_rvie.UPLOAD_PROPUESTA,
+                ruc=ruc,
+                per_tributario=periodo,
+                cod_proceso=CodProcesoRvie.REEMPLAZO_PROPUESTA,
+                nombre_archivo=f"LE{ruc}{periodo}.txt",
+                contenido=archivo_txt,
+                cod_libro=CodLibro.RVIE,
             )
+            response_data = {"numTicket": carga.num_ticket}
             
             # Procesar resultado
             resultado = await self._procesar_resultado_operacion(ruc, periodo, "REEMPLAZAR", response_data)
@@ -500,11 +508,10 @@ class RvieService:
             }
             
             # Hacer request a SUNAT
-            response_data = await self.api_client.post_with_auth(
-                self.rvie_endpoints["preliminar"],
-                token,
-                data
-            )
+            # 5.9 del manual de Ventas. Puede responder sin ticket: en ese caso
+            # el proceso ya terminó bien.
+            resultado = await self.api_client.rvie_registrar_preliminar(token, periodo)
+            response_data = {"numTicket": resultado.num_ticket}
             
             # Procesar resultado
             resultado = await self._procesar_resultado_operacion(ruc, periodo, "PRELIMINAR", response_data)
@@ -556,8 +563,9 @@ class RvieService:
             }
             
             # Hacer request a SUNAT
-            response_data = await self.api_client.get_with_auth(
-                self.rvie_endpoints["inconsistencias"],
+            # 5.25 del manual de Ventas
+            response_data = await self.api_client.get_json(
+                ep_rvie.inconsistencias_por_comprobante(periodo),
                 token,
                 params
             )
@@ -600,8 +608,9 @@ class RvieService:
             }
             
             # Hacer request a SUNAT
-            response_data = await self.api_client.get_with_auth(
-                self.rvie_endpoints["ticket"],
+            # 5.16 del manual de Ventas: mismo endpoint que el 5.31 de Compras
+            response_data = await self.api_client.get_json(
+                ep.consultar_estado_tickets(),
                 token,
                 params
             )
@@ -648,18 +657,23 @@ class RvieService:
                 logger.warning(f"⚠️ [RVIE] No se pudo obtener info del ticket, usando valores por defecto: {e}")
                 archivo_nombre = None
             
-            # Si no tenemos archivo_nombre del ticket, usar el valor conocido que funciona
+            # Antes habia aqui un nombre de archivo fijo de un periodo concreto
+            # del RUC de pruebas. Sin ticket que lo diga no se puede saber que
+            # archivo toca, y descargar otro en silencio es peor que fallar.
             if not archivo_nombre:
-                archivo_nombre = "LE2061296912520250800014040001EXP2.zip"
+                raise SireApiException(
+                    f"El ticket {ticket_id} no indica que archivo descargar; "
+                    f"consulta su estado antes de pedir la descarga."
+                )
             
-            # URL correcta según script funcional V25
-            download_url = "https://api-sire.sunat.gob.pe/v1/contribuyente/migeigv/libros/rvierce/gestionprocesosmasivos/web/masivo/archivoreporte"
+            # 5.17 del manual de Ventas, a traves del cliente unico.
+            download_url = ep.descargar_archivo_reporte()
             
             # Parámetros dinámicos basados en la información del ticket
             params = {
                 'nomArchivoReporte': archivo_nombre,  # Usar el archivo exacto del ticket
                 'codTipoArchivoReporte': '00',        # Según consulta anterior
-                'codLibro': '080000',                 # 080000 para RCE según manual v27
+                'codLibro': CodLibro.RVIE,            # 140000: este es el libro de ventas
                 'perTributario': periodo,             # Período dinámico
                 'codProceso': '10',                   # Código del proceso
                 'numTicket': ticket_id                # Número de ticket
@@ -674,71 +688,67 @@ class RvieService:
                 'Accept': 'application/json'
             }
             
-            # Realizar descarga con parámetros GET usando httpx directamente
-            import httpx
+            # Pasa por el cliente: reintentos, traduccion de errores y un solo
+            # sitio donde mirar si SUNAT cambia algo.
+            response = await self.api_client._make_request(
+                "GET", download_url, params=params, token=token
+            )
             
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.get(
-                    download_url,
-                    params=params,
-                    headers=headers
-                )
+            logger.info(f"📊 [RVIE] Status descarga: {response.status_code}")
+            
+            if response.status_code == 200:
+                file_content = response.content
                 
-                logger.info(f"📊 [RVIE] Status descarga: {response.status_code}")
+                # Verificar si es contenido binario (archivo ZIP)
+                content_type = response.headers.get('content-type', '')
+                logger.info(f"📄 [RVIE] Content-Type: {content_type}")
                 
-                if response.status_code == 200:
-                    file_content = response.content
+                if 'application' in content_type or len(file_content) > 1000:
+                    # Es un archivo binario
+                    filename = f"SIRE_DESCARGA_{ticket_id}_{params['nomArchivoReporte']}"
                     
-                    # Verificar si es contenido binario (archivo ZIP)
-                    content_type = response.headers.get('content-type', '')
-                    logger.info(f"📄 [RVIE] Content-Type: {content_type}")
+                    # Procesar archivo descargado
+                    file_response = FileDownloadResponse(
+                        filename=filename,
+                        content_type=content_type or 'application/zip',
+                        file_size=len(file_content),
+                        file_content=file_content,
+                        ticket_id=ticket_id
+                    )
                     
-                    if 'application' in content_type or len(file_content) > 1000:
-                        # Es un archivo binario
-                        filename = f"SIRE_DESCARGA_{ticket_id}_{params['nomArchivoReporte']}"
-                        
-                        # Procesar archivo descargado
-                        file_response = FileDownloadResponse(
-                            filename=filename,
-                            content_type=content_type or 'application/zip',
-                            file_size=len(file_content),
-                            file_content=file_content,
-                            ticket_id=ticket_id
-                        )
-                        
-                        logger.info(f"✅ [RVIE] Archivo descargado: {filename} ({len(file_content):,} bytes)")
-                        return file_response
-                    else:
-                        # Es una respuesta JSON o texto de error
-                        error_text = file_content.decode('utf-8') if file_content else "Sin contenido"
-                        logger.error(f"❌ [RVIE] Respuesta no es archivo: {error_text[:500]}")
-                        raise SireApiException(f"No se pudo descargar el archivo: {error_text[:200]}")
-                        
-                elif response.status_code == 422:
-                    error_detail = "Errores de validación - verifique parámetros"
-                    try:
-                        error_data = response.json()
-                        error_detail = str(error_data)
-                    except:
-                        error_detail = response.text
-                        
-                    logger.error(f"❌ [RVIE] Error 422: {error_detail}")
-                    raise SireApiException(f"Error de validación en descarga: {error_detail}")
-                    
-                elif response.status_code == 404:
-                    logger.error(f"❌ [RVIE] Archivo no encontrado para ticket {ticket_id}")
-                    raise SireApiException("Archivo no encontrado - el ticket podría haber expirado")
-                    
-                elif response.status_code == 401:
-                    logger.error(f"❌ [RVIE] Token inválido o expirado")
-                    raise SireApiException("Token inválido o expirado - reautentique")
-                    
+                    logger.info(f"✅ [RVIE] Archivo descargado: {filename} ({len(file_content):,} bytes)")
+                    return file_response
                 else:
-                    error_content = response.content
-                    error_text = error_content.decode('utf-8') if error_content else f"Error {response.status_code}"
-                    logger.error(f"❌ [RVIE] Error descarga {response.status_code}: {error_text[:500]}")
-                    raise SireApiException(f"Error descargando archivo: {error_text[:200]}")
-            
+                    # Es una respuesta JSON o texto de error
+                    error_text = file_content.decode('utf-8') if file_content else "Sin contenido"
+                    logger.error(f"❌ [RVIE] Respuesta no es archivo: {error_text[:500]}")
+                    raise SireApiException(f"No se pudo descargar el archivo: {error_text[:200]}")
+                    
+            elif response.status_code == 422:
+                error_detail = "Errores de validación - verifique parámetros"
+                try:
+                    error_data = response.json()
+                    error_detail = str(error_data)
+                except:
+                    error_detail = response.text
+                    
+                logger.error(f"❌ [RVIE] Error 422: {error_detail}")
+                raise SireApiException(f"Error de validación en descarga: {error_detail}")
+                
+            elif response.status_code == 404:
+                logger.error(f"❌ [RVIE] Archivo no encontrado para ticket {ticket_id}")
+                raise SireApiException("Archivo no encontrado - el ticket podría haber expirado")
+                
+            elif response.status_code == 401:
+                logger.error(f"❌ [RVIE] Token inválido o expirado")
+                raise SireApiException("Token inválido o expirado - reautentique")
+                
+            else:
+                error_content = response.content
+                error_text = error_content.decode('utf-8') if error_content else f"Error {response.status_code}"
+                logger.error(f"❌ [RVIE] Error descarga {response.status_code}: {error_text[:500]}")
+                raise SireApiException(f"Error descargando archivo: {error_text[:200]}")
+        
         except Exception as e:
             logger.error(f"❌ [RVIE] Error descargando archivo: {e}")
             raise SireApiException(f"Error descargando archivo RVIE: {e}")
@@ -921,65 +931,6 @@ class RvieService:
             created_at=datetime.utcnow()
         )
     
-    async def _crear_propuesta_mock(self, ruc: str, periodo: str) -> RviePropuesta:
-        """Crear propuesta mock para fallback cuando SUNAT no responda"""
-        logger.info(f"🎭 [RVIE] Creando propuesta mock para RUC {ruc}, período {periodo}")
-        
-        from ..models.rvie import RviePropuesta, RvieComprobante, RvieTipoComprobante
-        from datetime import datetime, date
-        from decimal import Decimal
-        
-        # Crear comprobantes mock basados en período real
-        year = int(periodo[:4])
-        month = int(periodo[4:])
-        
-        mock_comprobantes = []
-        total_base = Decimal("0.00")
-        total_igv = Decimal("0.00")
-        total_importe = Decimal("0.00")
-        
-        for i in range(1, 4):
-            base_imponible = Decimal(f"{100.00 + (i * 50.00):.2f}")
-            igv = base_imponible * Decimal("0.18")  # IGV 18%
-            importe_total = base_imponible + igv
-            
-            comprobante = RvieComprobante(
-                periodo=periodo,
-                correlativo=f"{i:06d}",
-                fecha_emision=date(year, month, min(15 + i, 28)),
-                tipo_comprobante=RvieTipoComprobante.FACTURA,
-                serie="F001",
-                numero=f"{i:08d}",
-                tipo_documento_cliente="6",  # RUC
-                numero_documento_cliente=f"2061005635{i}",
-                razon_social_cliente=f"CLIENTE MOCK {i} S.A.C.",
-                base_imponible=base_imponible,
-                igv=igv,
-                importe_total=importe_total,
-                moneda="PEN",
-                estado="ACEPTADO"
-            )
-            
-            mock_comprobantes.append(comprobante)
-            total_base += base_imponible
-            total_igv += igv
-            total_importe += importe_total
-        
-        propuesta = RviePropuesta(
-            ruc=ruc,
-            periodo=periodo,
-            fecha_generacion=datetime.utcnow(),
-            cantidad_comprobantes=len(mock_comprobantes),
-            total_base_imponible=total_base,
-            total_igv=total_igv,
-            total_importe=total_importe,
-            comprobantes=mock_comprobantes,
-            estado="PROPUESTA"  # Valor válido del enum
-        )
-        
-        logger.info(f"✅ [RVIE] Propuesta mock creada: {len(mock_comprobantes)} comprobantes, S/ {total_importe}")
-        return propuesta
-
     async def descargar_propuesta_ticket(self, ruc: str, periodo: str) -> Dict[str, Any]:
         """Descargar propuesta RVIE para uso en tickets (formato simplificado)"""
         try:
@@ -2006,7 +1957,7 @@ class RvieService:
                 logger.info(f"🌐 [RVIE] Intento {intento}/{max_intentos} - Enviando petición a SUNAT")
                 
                 response_data = await asyncio.wait_for(
-                    self.api_client.get_with_auth(endpoint, token, params),
+                    self.api_client.get_json(endpoint, token, params),
                     timeout=timeout_segundos
                 )
                 
@@ -2153,8 +2104,10 @@ class RvieService:
             
         except Exception as e:
             logger.error(f"❌ [RVIE] Error procesando respuesta síncrona: {e}")
-            # En caso de error, crear propuesta mock como fallback
-            return await self._crear_propuesta_mock(ruc, periodo)
+            raise SireApiException(
+                f"No se pudo interpretar la respuesta de SUNAT para el período "
+                f"{periodo}: {e}"
+            )
     
     def _contiene_archivos_zip(self, response_data: Dict[str, Any]) -> bool:
         """
@@ -2407,8 +2360,10 @@ class RvieService:
             
         except Exception as e:
             logger.error(f"❌ [RVIE] Error convirtiendo ticket a propuesta: {e}")
-            # Fallback a propuesta mock
-            return await self._crear_propuesta_mock(ruc, periodo)
+            raise SireApiException(
+                f"No se pudo construir la propuesta del período {periodo} a partir "
+                f"del ticket devuelto por SUNAT: {e}"
+            )
     
     async def _convertir_data_a_comprobante(
         self,
@@ -2751,7 +2706,7 @@ class RvieService:
                 'perFin': periodo_fin,     # Período final dinámico
                 'page': 1,
                 'perPage': 50,             # Aumentar para más resultados
-                'codLibro': '080000',      # 080000 para RCE según manual v27
+                'codLibro': CodLibro.RVIE,  # 140000: este es el libro de ventas
                 'codOrigenEnvio': '2'      # Origen servicio web
             }
             

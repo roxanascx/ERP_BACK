@@ -3,6 +3,7 @@ Servicio RENIEC para consultas DNI
 Basado en el código funcional proporcionado
 """
 
+import asyncio
 import requests
 import json
 import time
@@ -93,7 +94,11 @@ class ReniecService:
             else:
                 url = f"{endpoint}{dni}"
             
-            response = requests.get(url, headers=self.headers, timeout=self.timeout)
+            # requests es síncrono/bloqueante: se ejecuta en un thread aparte
+            # para no bloquear el event loop de FastAPI mientras dura la consulta
+            response = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: requests.get(url, headers=self.headers, timeout=self.timeout)
+            )
             
             if response.status_code == 200:
                 data = response.json()

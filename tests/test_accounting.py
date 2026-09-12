@@ -53,18 +53,31 @@ class MockRepository:
     async def find_by_codigo(self, codigo: str):
         return self.data.get(codigo)
 
+    @staticmethod
+    def _cumple(cuenta, key, value):
+        """Una condicion suelta del filtro, como la evaluaria Mongo."""
+        if key == "$or":
+            return any(
+                all(MockRepository._cumple(cuenta, k, v) for k, v in sub.items())
+                for sub in value
+            )
+        if isinstance(value, dict) and "$exists" in value:
+            return (key in cuenta) == value["$exists"]
+        return cuenta.get(key) == value
+
     async def list_cuentas(self, filtros=None):
+        """
+        Filtrado al estilo Mongo, lo justo para lo que usa el servicio.
+
+        Antes comparaba todo por igualdad, asi que el `$or` que el servicio
+        anade para separar el plan estandar del personalizado no casaba con
+        nada y este mock devolvia siempre una lista vacia.
+        """
         filtros = filtros or {}
         result = []
         for cuenta in self.data.values():
-            match = True
-            for key, value in filtros.items():
-                if key == "$regex":
-                    continue  # Skip regex for mock
-                if cuenta.get(key) != value:
-                    match = False
-                    break
-            if match:
+            if all(self._cumple(cuenta, k, v) for k, v in filtros.items()
+                   if k != "$regex"):
                 result.append(cuenta)
         return result
 

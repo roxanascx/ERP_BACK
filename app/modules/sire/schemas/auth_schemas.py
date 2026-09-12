@@ -4,7 +4,7 @@ Schemas Pydantic para autenticación SIRE
 
 from datetime import datetime
 from typing import Optional, List
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class SireAuthRequest(BaseModel):
@@ -15,7 +15,8 @@ class SireAuthRequest(BaseModel):
     client_id: str = Field(..., description="Client ID API SUNAT", min_length=1)
     client_secret: str = Field(..., description="Client Secret API SUNAT", min_length=1)
     
-    @validator('ruc')
+    @field_validator('ruc')
+    @classmethod
     def validate_ruc(cls, v):
         if not v.isdigit():
             raise ValueError('RUC debe contener solo dígitos')

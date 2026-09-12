@@ -2,6 +2,13 @@
 Rutas para RVIE - Registro de Ventas e Ingresos Electrónico
 """
 
+# Los endpoints de escritura de RVIE (aceptar propuesta, reemplazar propuesta,
+# registrar preliminar y el flujo completo) vivian aqui contra URLs que el
+# manual de Ventas v30 desmiente. Se sustituyen por /sire/rvie/ciclo/*, que
+# usa el catalogo verificado y una maquina de estados. Tener dos caminos de
+# escritura hacia SUNAT, uno sin verificar, es justo lo que no conviene antes
+# de probar en produccion.
+
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -251,110 +258,6 @@ async def validate_ruc_from_request(request: RvieGenerarTicketRequest, company_s
 # ENDPOINTS FLUJO COMPLETO SEGÚN MANUAL v25
 # ========================================
 
-@router.post("/flujo-completo/{ruc}/{periodo}")
-async def ejecutar_flujo_completo_preliminar(
-    ruc: str,
-    periodo: str,
-    auto_aceptar: bool = True,
-    incluir_detalle: bool = True,
-    rvie_service: RvieService = Depends(get_rvie_service)
-):
-    """
-    Ejecutar flujo completo para registro preliminar RVIE
-    
-    SECUENCIA SEGÚN MANUAL SUNAT v25:
-    1. Validar prerrequisitos y sesión activa
-    2. Descargar propuesta SUNAT 
-    3. Aceptar propuesta (si auto_aceptar=True)
-    4. Preparar para registro preliminar
-    
-    Este endpoint implementa la secuencia mínima requerida según
-    el diagrama del Manual SUNAT para llegar al registro preliminar.
-    """
-    try:
-        # Importar controlador de flujo
-        from ..services.rvie_flow_controller import RvieFlowController
-        from ..services.api_client import SunatApiClient
-        from ..services.token_manager import SireTokenManager
-        from ....database import get_database
-        
-        # Crear dependencias
-        database = get_database()
-        mongo_collection = database.sire_sessions if database else None
-        token_manager = SireTokenManager(mongo_collection=mongo_collection)
-        api_client = SunatApiClient()
-        
-        # Crear controlador de flujo
-        flow_controller = RvieFlowController(api_client, token_manager, database)
-        
-        # Ejecutar flujo completo
-        resultado = await flow_controller.ejecutar_flujo_completo_preliminar(
-            ruc=ruc,
-            periodo=periodo,
-            auto_aceptar=auto_aceptar,
-            incluir_detalle=incluir_detalle
-        )
-        
-        return {
-            "success": True,
-            "message": "Flujo completo ejecutado exitosamente",
-            "data": resultado
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ [RVIE-FLUJO] Error en flujo completo: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error ejecutando flujo completo: {str(e)}"
-        )
-
-@router.get("/estado/{ruc}/{periodo}")
-async def obtener_estado_proceso_rvie(
-    ruc: str,
-    periodo: str,
-    rvie_service: RvieService = Depends(get_rvie_service)
-):
-    """
-    Obtener estado actual del proceso RVIE para un período
-    
-    Devuelve el estado actual, siguiente acción recomendada,
-    y resumen de datos del proceso.
-    """
-    try:
-        # Importar controlador de flujo
-        from ..services.rvie_flow_controller import RvieFlowController
-        from ..services.api_client import SunatApiClient
-        from ..services.token_manager import SireTokenManager
-        from ....database import get_database
-        
-        # Crear dependencias
-        database = get_database()
-        mongo_collection = database.sire_sessions if database else None
-        token_manager = SireTokenManager(mongo_collection=mongo_collection)
-        api_client = SunatApiClient()
-        
-        # Crear controlador de flujo
-        flow_controller = RvieFlowController(api_client, token_manager, database)
-        
-        # Obtener estado
-        estado = await flow_controller.obtener_estado_proceso_rvie(ruc, periodo)
-        
-        return {
-            "success": True,
-            "data": estado
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ [RVIE-ESTADO] Error consultando estado: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error consultando estado: {str(e)}"
-        )
-
-# ========================================
-# ENDPOINTS ESPECÍFICOS SEGÚN MANUAL v25  
-# ========================================
-
 @router.get("/{ruc}/resumen/{periodo}", response_model=RvieResumenResponse)
 async def obtener_resumen_rvie(
     ruc: str,
@@ -593,135 +496,6 @@ async def descargar_propuesta(
             status_code=500, 
             detail=f"Error interno del servidor: {str(e)}"
         )
-
-
-@router.post("/aceptar-propuesta", response_model=RvieProcesoResponse)
-async def aceptar_propuesta(
-    request: RvieAceptarPropuestaRequest,
-    background_tasks: BackgroundTasks,
-    company: CompanyModel = Depends(validate_ruc_access),
-    rvie_service: RvieService = Depends(get_rvie_service)
-):
-    """
-    Aceptar propuesta RVIE de SUNAT
-    
-    Acepta la propuesta de ventas e ingresos previamente descargada según Manual SUNAT v25.
-    
-    - **ruc**: RUC del contribuyente (debe coincidir con la empresa autenticada)
-    - **periodo**: Período en formato YYYYMM
-    - **acepta_completa**: True para aceptar propuesta completa, False para parcial
-    - **observaciones**: Observaciones opcionales del contribuyente (máx. 500 caracteres)
-    
-    **Flujo**:
-    1. Valida que existe una propuesta descargada
-    2. Verifica que el estado permite aceptación
-    3. Envía aceptación a SUNAT
-    4. Actualiza estado del proceso a ACEPTADO
-    5. Retorna resultado con ticket ID para seguimiento
-    """
-    try:
-        logger.info(f"🚀 [API] Aceptando propuesta RVIE para RUC {request.ruc}, período {request.periodo}")
-        
-        # Validar que el RUC coincide con la empresa autenticada
-        if request.ruc != company.ruc:
-            raise HTTPException(
-                status_code=403, 
-                detail=f"RUC solicitado {request.ruc} no coincide con empresa autenticada {company.ruc}"
-            )
-        
-        # Ejecutar aceptación de propuesta con parámetros mejorados
-        resultado = await rvie_service.aceptar_propuesta(
-            ruc=request.ruc,
-            periodo=request.periodo,
-            acepta_completa=getattr(request, 'acepta_completa', True),
-            observaciones=getattr(request, 'observaciones', None)
-        )
-        
-        # Registrar auditoría de la operación
-        logger.info(
-            f"✅ [API] Propuesta RVIE aceptada exitosamente. "
-            f"RUC: {request.ruc}, Período: {request.periodo}, "
-            f"Estado: {resultado.estado}, Ticket: {resultado.ticket_id}"
-        )
-        
-        return resultado
-        
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
-    except Exception as e:
-        logger.error(f"❌ [API] Error inesperado aceptando propuesta RVIE: {str(e)}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Error interno del servidor: {str(e)}"
-        )
-
-
-@router.post("/reemplazar-propuesta", response_model=RvieProcesoResponse)
-async def reemplazar_propuesta(
-    request: RvieReemplazarPropuestaRequest,
-    background_tasks: BackgroundTasks,
-    company: CompanyModel = Depends(validate_ruc_access),
-    rvie_service: RvieService = Depends(get_rvie_service)
-):
-    """
-    Reemplazar propuesta RVIE con archivo personalizado
-    
-    Permite enviar un archivo TXT personalizado para reemplazar
-    la propuesta generada por SUNAT.
-    """
-    try:
-        logger.info(f"Reemplazando propuesta RVIE para RUC {request.ruc}, período {request.periodo}")
-        
-        # Ejecutar reemplazo de propuesta
-        resultado = await rvie_service.reemplazar_propuesta(
-            ruc=request.ruc,
-            periodo=request.periodo,
-            archivo_contenido=request.archivo_contenido,
-            nombre_archivo=request.nombre_archivo
-        )
-        
-        logger.info(f"Propuesta RVIE reemplazada exitosamente para {request.ruc}-{request.periodo}")
-        return resultado
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error reemplazando propuesta RVIE: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
-
-
-@router.post("/registrar-preliminar", response_model=RvieProcesoResponse)
-async def registrar_preliminar(
-    request: RvieRegistrarPreliminarRequest,
-    background_tasks: BackgroundTasks,
-    company: CompanyModel = Depends(validate_ruc_access),
-    rvie_service: RvieService = Depends(get_rvie_service)
-):
-    """
-    Registrar información preliminar RVIE
-    
-    Permite registrar comprobantes de manera preliminar antes
-    de la generación de la propuesta por SUNAT.
-    """
-    try:
-        logger.info(f"Registrando preliminar RVIE para RUC {request.ruc}, período {request.periodo} - {len(request.comprobantes)} comprobantes")
-        
-        # Ejecutar registro preliminar
-        resultado = await rvie_service.registrar_preliminar(
-            ruc=request.ruc,
-            periodo=request.periodo,
-            comprobantes=request.comprobantes
-        )
-        
-        logger.info(f"Registro preliminar RVIE completado para {request.ruc}-{request.periodo}")
-        return resultado
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error en registro preliminar RVIE: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 
 @router.get("/inconsistencias/{ruc}/{periodo}", response_model=RvieInconsistenciasResponse)
