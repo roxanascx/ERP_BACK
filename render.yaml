@@ -30,14 +30,9 @@ services:
       # Disco efímero: se borra en cada deploy/reinicio
       - key: SIRE_FILE_STORAGE
         value: /tmp/sire_files
-      # Credenciales SUNAT / SIRE (opcionales, se cargan desde el dashboard)
-      - key: SUNAT_RUC
-        sync: false
-      - key: SUNAT_USUARIO
-        sync: false
-      - key: SUNAT_CLAVE_SOL
-        sync: false
-      - key: SUNAT_CLIENT_ID
-        sync: false
-      - key: SUNAT_CLIENT_SECRET
+      # Clave Fernet que descifra las credenciales SUNAT guardadas en Mongo.
+      # DEBE ser exactamente la misma con la que se cifraron: si cambia, los
+      # secretos de la coleccion `companies` quedan irrecuperables.
+      # Por eso va con sync:false y NUNCA con generateValue.
+      - key: SIRE_ENCRYPTION_KEY
         sync: false

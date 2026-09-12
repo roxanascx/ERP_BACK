@@ -17,13 +17,22 @@ certifi==2025.8.3
 python-jose[cryptography]==3.5.0
 cryptography==50.0.1
 
-# Dependencias para módulo Socios de Negocio
-pillow==10.1.0
-pytesseract==0.3.10
+# --- Autenticacion de usuarios (app/routes/auth.py) ---
+# passlib usa el backend bcrypt para hashear contrasenas.
+passlib==1.7.4
+bcrypt==4.3.0
+# auth.py aun tipa las dependencias con Session de SQLAlchemy (codigo heredado,
+# la persistencia real es Mongo), por lo que el import se ejecuta al arranque.
+sqlalchemy==2.0.43
+
+# Imagenes: openpyxl la carga al importar, para incrustar imagenes en Excel.
+# 10.1.0 no tiene wheels para Python 3.13 y fallaba al compilar.
+pillow==11.3.0
 
 # --- Clientes HTTP (SUNAT / SIRE / Consultas API) ---
 httpx==0.28.1
 requests==2.32.5
+aiohttp==3.12.15
 beautifulsoup4==4.13.4
 
 # --- Fechas / zonas horarias ---
