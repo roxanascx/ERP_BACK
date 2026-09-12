@@ -150,3 +150,9 @@ cython_debug/
 
 # Archivos temporales de SIRE/PLE
 temp/
+
+# El backend es Python puro: un package-lock.json aqui es basura de un
+# `npm install` lanzado en la carpeta equivocada y puede hacer que Render
+# autodetecte el servicio como Node.js en vez de Python.
+package-lock.json
+node_modules/
